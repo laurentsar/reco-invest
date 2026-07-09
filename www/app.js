@@ -16,7 +16,8 @@ const APP_VERSION = '1.00';   // ← synchronisé par la CI depuis build.gradle 
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
-const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
+const CAFEYN       = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
+const CAFEYN_HEBDO = 'https://www.cafeyn.co/fr/magazines/le-revenu-hebdo';
 const YF     = 'https://query1.finance.yahoo.com/v8/finance/chart/';
 const K_ITEMS = 'recoInvest:items';
 const K_QUOTE = 'recoInvest:quotes';
@@ -393,26 +394,28 @@ function renderAlloc(){
 }
 
 /* ================= Magazine ================= */
-function openCafeyn(){
+function openMag(url,title){
   try{
     const P = window.Capacitor?.Plugins;
     // WebView in-app (garde la session Cafeyn + login mémorisé, plugin natif)
-    if(P?.UpdatePlugin?.openInAppWebView){ P.UpdatePlugin.openInAppWebView({url:CAFEYN,title:'Le Revenu',barColor:'#7B3F00'}); return; }
-    if(P?.Browser){ P.Browser.open({url:CAFEYN}); return; }
+    if(P?.UpdatePlugin?.openInAppWebView){ P.UpdatePlugin.openInAppWebView({url,title,barColor:'#7B3F00'}); return; }
+    if(P?.Browser){ P.Browser.open({url}); return; }
   }catch(e){}
-  window.open(CAFEYN,'_blank','noopener');
+  window.open(url,'_blank','noopener');
 }
 function renderMag(){
   const el=$('#tab-mag');
-  el.innerHTML=`<button class="mag-btn" id="mag-open">📖 Lire Le Revenu<small>Ouvre le magazine dans Cafeyn (abonnement requis)</small></button>
+  el.innerHTML=`<button class="mag-btn" id="mag-open">📖 Lire Le Revenu<small>Mensuel placements — Cafeyn (abonnement requis)</small></button>
+    <button class="mag-btn" id="mag-hebdo" style="background:linear-gradient(135deg,#8a4a00,#4a2600)">📈 Le Revenu Hebdo Bourse<small>Sélections d'actions hebdo — Cafeyn (abonnement requis)</small></button>
     <div class="card mag-links">
       <a href="https://www.lerevenu.com/bourse" target="_blank" rel="noopener">Actus Bourse — lerevenu.com <span>▸</span></a>
       <a href="https://www.lerevenu.com/placements" target="_blank" rel="noopener">Placements <span>▸</span></a>
       <a href="https://www.lerevenu.com/immobilier" target="_blank" rel="noopener">Immobilier <span>▸</span></a>
       <a href="https://www.lerevenu.com/impots" target="_blank" rel="noopener">Impôts & fiscalité <span>▸</span></a>
     </div>
-    <div class="card" style="font-size:12.5px;color:var(--mut)">Signaux et Thématiques sont calculés automatiquement à partir des articles du Revenu. Pour l'analyse argumentée, ouvre le magazine.</div>`;
-  el.querySelector('#mag-open').onclick=openCafeyn;
+    <div class="card" style="font-size:12.5px;color:var(--mut)">Signaux et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu. Les sélections détaillées de l'Hebdo Bourse (payantes) se lisent dans le magazine ci-dessus.</div>`;
+  el.querySelector('#mag-open').onclick=()=>openMag(CAFEYN,'Le Revenu');
+  el.querySelector('#mag-hebdo').onclick=()=>openMag(CAFEYN_HEBDO,'Le Revenu Hebdo Bourse');
 }
 
 /* ================= Navigation / chargement ================= */
