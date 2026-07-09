@@ -47,6 +47,48 @@ body{
 }
 .sec-h{font-size:13px; font-weight:800; color:var(--mut); text-transform:uppercase; letter-spacing:.6px; margin:2px 0 10px}
 
+/* ---- Signaux : en-tête + légende ---- */
+.rc-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin:2px 0 12px}
+.rc-count{font-size:13px; font-weight:800; color:var(--mut); text-transform:uppercase; letter-spacing:.5px}
+.legend-btn{border:1px solid var(--line); background:var(--card); color:var(--blue); font-size:12.5px; font-weight:700; padding:6px 11px; border-radius:999px; cursor:pointer}
+.legend-btn.open{background:var(--accent); color:#0b1020; border-color:var(--accent)}
+.legend{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px}
+.legend-body{font-size:12.5px; color:#c5d1ec; line-height:1.55}
+.legend-body .lg-h{font-size:13px; font-weight:800; color:var(--tx); margin-bottom:8px}
+.legend-body p{margin:6px 0}
+.legend-body ul{margin:6px 0; padding-left:18px}
+.legend-body li{margin:3px 0}
+.legend-body b{color:#fff}
+.tag{display:inline-block; font-size:10px; font-weight:800; padding:2px 6px; border-radius:6px; margin:0 1px}
+
+/* ---- Signaux : carte valeur ---- */
+.rc{background:var(--card); border:1px solid var(--line); border-left:4px solid var(--line); border-radius:14px; padding:13px 14px; margin-bottom:11px}
+.rc-b-green{border-left-color:var(--green)}
+.rc-b-amber{border-left-color:var(--amber)}
+.rc-b-red{border-left-color:var(--red)}
+.rc-b-gray{border-left-color:#4b5b7a}
+.rc-top{display:flex; align-items:flex-start; justify-content:space-between; gap:10px}
+.rc-id{min-width:0}
+.rc-name{font-size:17px; font-weight:800; line-height:1.15}
+.rc-sub{font-size:12.5px; color:var(--mut); margin-top:3px}
+.rc-sub b{color:var(--tx)}
+.rc-sub .muted{color:var(--mut)}
+.rc-verdict{flex:none; display:flex; flex-direction:column; align-items:flex-end; gap:5px}
+.rc-dots{display:flex; gap:12px; margin:11px 0 4px; font-size:15px}
+.rc-dots span{cursor:help; white-space:nowrap}
+.rc-kv{margin:8px 0 2px; border-top:1px solid var(--line); padding-top:8px}
+.kv{display:flex; justify-content:space-between; gap:10px; font-size:12.5px; padding:3px 0}
+.kv>span{color:var(--mut)}
+.kv b{color:#e8eefc; font-weight:700; text-align:right}
+.kv i{font-style:normal; font-weight:800}
+.kv i.up{color:#5ef08a}
+.kv i.down{color:#ff7a7a}
+.rc-quant{display:flex; flex-wrap:wrap; gap:6px 8px; margin-top:9px}
+.rc-quant span{font-size:11.5px; color:var(--mut); background:#0e1729; border:1px solid var(--line); padding:3px 8px; border-radius:8px; cursor:help}
+.rc-actions{display:flex; gap:8px; margin-top:11px}
+.btn-buy{flex:1; text-align:center; text-decoration:none; background:linear-gradient(135deg,#ec4d1f,#c0360f); color:#fff; font-weight:800; font-size:13.5px; padding:10px; border-radius:11px}
+.btn-src{flex:none; text-decoration:none; background:#0e1729; border:1px solid var(--line); color:#c5d1ec; font-weight:700; font-size:13px; padding:10px 14px; border-radius:11px}
+
 /* reco item */
 .reco{
   display:flex; align-items:flex-start; gap:12px; padding:12px 0; border-top:1px solid var(--line);

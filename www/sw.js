@@ -1,4 +1,4 @@
-const CACHE = 'reco-invest-v4';
+const CACHE = 'reco-invest-v5';
 const SHELL = [
   './', './index.html', './styles.css', './app.js', './update-check.js',
   './manifest.webmanifest', './img/icon-192.png', './img/icon-512.png',

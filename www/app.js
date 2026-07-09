@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.03';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.04';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -363,6 +363,30 @@ function computeVerdict(e){
   return {lab,cls,composite,nSig:avail.length,bull,bear,cv,gv};
 }
 
+/* Lien Boursorama : page cours (où l'utilisateur connecté passe l'ordre). */
+function boursoUrl(ticker,name){
+  if(ticker && /\.PA$/.test(ticker)) return 'https://www.boursorama.com/cours/1rP'+ticker.replace('.PA','')+'/';
+  return 'https://www.boursorama.com/recherche/?query='+encodeURIComponent(ticker?ticker.replace(/\.[A-Z]+$/,''):name);
+}
+
+const LEGEND_HTML = `<div class="legend-body">
+  <div class="lg-h">Comment lire une carte</div>
+  <p><b>Reco</b> (pastille) : verdict global, du plus positif au plus négatif —
+     <span class="tag b-green">ACHETER</span> <span class="tag b-green">Renforcer</span>
+     <span class="tag b-amber">Accumuler</span> <span class="tag b-gray">Conserver</span>
+     <span class="tag b-amber">Alléger</span> <span class="tag b-red">VENDRE</span>.</p>
+  <p><b>4 sources croisées</b> (🟢 positif · ⚪ neutre · 🔴 négatif), pondérées :</p>
+  <ul>
+    <li>📰 <b>Le Revenu</b> 32 % — point de départ (valeurs citées + ton des articles)</li>
+    <li>📈 <b>Technique</b> 30 % — SMA 20/50/200, RSI 14, MACD, momentum</li>
+    <li>🌐 <b>Consensus mondial</b> 26 % — analystes (retenu si ≥ ${MIN_ANALYSTS})</li>
+    <li>🔎 <b>Google News</b> 12 % — sentiment presse monde</li>
+  </ul>
+  <p><span class="conc ok">✅ concordants</span> = les sources s'alignent (confiance élevée).
+     🎯 <b>Objectif</b> = cours cible + <b>potentiel</b> vs cours actuel.
+     💰 <b>Boursorama</b> = ouvre la fiche pour passer l'ordre (exécution manuelle).</p>
+</div>`;
+
 /* ================= Rendu : Signaux ================= */
 function renderRecos(){
   const el=$('#tab-recos');
@@ -372,63 +396,71 @@ function renderRecos(){
     const t=byName[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
     const o={...e, ticker:t?.[2], q, tech:ts}; o.v=computeVerdict(o); return o;
   }).sort((a,b)=>b.v.composite-a.v.composite);
-  let h=`<div class="card"><div class="sec-h">🎯 Signaux · ${scored.length} valeurs · 4 sources croisées</div>`;
+
+  const dot=d=>d==null?'⚪':d>0.15?'🟢':d<-0.15?'🔴':'⚪';
+  let h=`<div class="rc-head">
+    <div class="rc-count">🎯 ${scored.length} valeurs · 4 sources</div>
+    <button id="legend-btn" class="legend-btn" aria-label="Légende">ⓘ Légende</button>
+  </div>
+  <div id="legend" class="legend" hidden>${LEGEND_HTML}</div>`;
+
   for(const e of scored){
     const v=e.v, best=e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0], q=e.q;
-    let quant='';
-    if(q){
-      const trend = q.sma200!=null ? (q.price>q.sma50&&q.price>q.sma200?'📈 haussière':q.price<q.sma50&&q.price<q.sma200?'📉 baissière':'↔️ mixte') : '—';
-      const rsiState = q.rsi==null?'':q.rsi>70?' (surachat)':q.rsi<30?' (survente)':'';
-      const macdS = q.macd!=null?(q.macd>q.sig?'haussier':'baissier'):'—';
-      quant=`<div class="quant">
-        <span>${e.ticker} · <b>${fmt(q.price)}</b></span>
-        <span>Tendance ${trend}</span>
-        <span>RSI ${q.rsi==null?'—':Math.round(q.rsi)}${rsiState}</span>
-        <span>MACD ${macdS}</span>
-        <span>Perf 3M ${q.m3==null?'—':(q.m3>0?'+':'')+q.m3.toFixed(1)+'%'}</span>
-      </div>`;
-    } else if(e.ticker){ quant='<div class="quant"><span>Cours indisponible (technique ignorée)</span></div>'; }
-    // objectif Le Revenu + potentiel
-    let objline=''; const tg=TARGETS[e.name]?.target;
-    if(tg){ let up=''; if(q?.price){ const p=(tg/q.price-1)*100; up=` · potentiel <b style="color:${p>=0?'#5ef08a':'#ff7a7a'}">${p>=0?'+':''}${p.toFixed(1)}%</b>`; }
-      objline=`<div class="obj">🎯 Objectif Le Revenu <b>${fmt(tg)} €</b>${up}</div>`; }
-    // consensus analystes mondial
-    let consline='';
-    if(v.cv){ let up=''; if(q?.price && v.cv.target){ const p=(v.cv.target/q.price-1)*100; up=` · potentiel ${p>=0?'+':''}${p.toFixed(1)}%`; }
-      consline=`<div class="obj" style="background:#122a1a;border-color:#1f5b38">🌐 Consensus mondial <b>${esc(v.cv.label)}</b> · ${v.cv.n} analystes${v.cv.target?` · objectif moyen ${fmt(v.cv.target)}`:''}${up}</div>`; }
-    // 4 sources : icônes directionnelles
-    const arrow=d=>d>0.15?'🟢':d<-0.15?'🔴':'⚪';
-    const gv=v.gv;
-    const srcs=`<div class="srcs">
-      <span>📰 LR ${arrow(clamp(e.news/2,-1,1))}</span>
-      <span>📈 Tech ${e.tech==null?'—':arrow(e.tech/4)}</span>
-      <span>🌐 Consensus ${v.cv?arrow((3-v.cv.mean)/1.5):'—'}</span>
-      <span>🔎 Google ${gv?arrow(gv.score/3):'—'}</span>
+    const lrDir=clamp(e.news/2,-1,1), techDir=e.tech==null?null:e.tech/4,
+          consDir=v.cv?(3-v.cv.mean)/1.5:null, gDir=v.gv?v.gv.score/3:null;
+    // pastilles 4 sources avec info-bulle (title)
+    const dots=`<div class="rc-dots">
+      <span title="Le Revenu (presse) — ${lrDir>0.15?'positif':lrDir<-0.15?'négatif':'neutre'}">📰${dot(lrDir)}</span>
+      <span title="Analyse technique — ${techDir==null?'indispo':techDir>0.15?'haussière':techDir<-0.15?'baissière':'neutre'}">📈${techDir==null?'⚫':dot(techDir)}</span>
+      <span title="Consensus analystes mondial — ${v.cv?v.cv.label+' ('+v.cv.n+' analystes)':'indispo (< '+MIN_ANALYSTS+' ou hors ligne)'}">🌐${consDir==null?'⚫':dot(consDir)}</span>
+      <span title="Google News (presse monde) — ${gDir==null?'indispo':gDir>0.15?'positif':gDir<-0.15?'négatif':'neutre'}">🔎${gDir==null?'⚫':dot(gDir)}</span>
     </div>`;
     // concordance
-    const conc = v.nSig>=2 ? (v.bull>=v.nSig && v.bull>=3 ? `<span class="conc ok">✅ ${v.bull}/${v.nSig} concordants</span>`
-      : v.bear>=v.nSig && v.bear>=3 ? `<span class="conc ko">⛔ ${v.bear}/${v.nSig} négatifs</span>`
-      : v.bull>v.bear ? `<span class="conc mid">↗︎ ${v.bull}/${v.nSig} positifs</span>`
-      : v.bear>v.bull ? `<span class="conc mid">↘︎ ${v.bear}/${v.nSig} négatifs</span>`
-      : `<span class="conc mid">↔︎ signaux partagés</span>`) : '';
-    h+=`<div class="reco">
-      <div class="reco-badge ${v.cls}">${v.lab}</div>
-      <div class="reco-body">
-        <div class="reco-name">${esc(e.name)} ${conc}</div>
-        ${srcs}
-        ${quant}
-        ${objline}
-        ${consline}
-        <div class="reco-just">${best.link?`<a href="${esc(best.link)}" target="_blank" rel="noopener">${esc(best.title)}</a>`:esc(best.title)}</div>
-      </div></div>`;
+    const conc = v.nSig>=2 ? (v.bull>=v.nSig && v.bull>=3 ? `<span class="conc ok" title="Toutes les sources s'alignent">✅ ${v.bull}/${v.nSig}</span>`
+      : v.bear>=v.nSig && v.bear>=3 ? `<span class="conc ko">⛔ ${v.bear}/${v.nSig}</span>`
+      : v.bull>v.bear ? `<span class="conc mid">↗︎ ${v.bull}/${v.nSig}</span>`
+      : v.bear>v.bull ? `<span class="conc mid">↘︎ ${v.bear}/${v.nSig}</span>`
+      : `<span class="conc mid">↔︎ partagé</span>`) : '';
+    // ligne cours
+    const priceStr = q?.price!=null ? `<b>${fmt(q.price)} €</b>` : '<span class="muted">cours n/d</span>';
+    // objectifs (LR + consensus) en lignes clé-valeur
+    let kv='';
+    const tg=TARGETS[e.name]?.target;
+    if(tg){ const p=q?.price?(tg/q.price-1)*100:null;
+      kv+=`<div class="kv"><span>🎯 Objectif Le Revenu</span><b>${fmt(tg)} €${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
+    if(v.cv){ const p=(q?.price&&v.cv.target)?(v.cv.target/q.price-1)*100:null;
+      kv+=`<div class="kv"><span>🌐 Consensus (${v.cv.n})</span><b>${esc(v.cv.label)}${v.cv.target?` · ${fmt(v.cv.target)} €`:''}${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
+    // indicateurs techniques compacts
+    let tech='';
+    if(q){
+      const trend=q.sma200!=null?(q.price>q.sma50&&q.price>q.sma200?'📈':q.price<q.sma50&&q.price<q.sma200?'📉':'↔️'):'';
+      tech=`<div class="rc-quant">
+        <span title="Tendance vs moyennes mobiles">${trend||'—'}</span>
+        <span title="RSI 14 (>70 surachat, <30 survente)">RSI ${q.rsi==null?'—':Math.round(q.rsi)}</span>
+        <span title="MACD 12-26-9">MACD ${q.macd!=null?(q.macd>q.sig?'▲':'▼'):'—'}</span>
+        <span title="Performance 3 mois">3M ${q.m3==null?'—':(q.m3>0?'+':'')+q.m3.toFixed(0)+'%'}</span>
+      </div>`;
+    }
+    const bUrl=boursoUrl(e.ticker,e.name);
+    const buyLab = /green|amber/.test(v.cls)&&v.composite>=0.05 ? '💰 Acheter' : '💰 Boursorama';
+    h+=`<div class="rc rc-${v.cls}">
+      <div class="rc-top">
+        <div class="rc-id"><div class="rc-name">${esc(e.name)}</div>
+          <div class="rc-sub">${e.ticker?esc(e.ticker)+' · ':''}${priceStr}</div></div>
+        <div class="rc-verdict"><div class="reco-badge ${v.cls}">${v.lab}</div>${conc}</div>
+      </div>
+      ${dots}
+      ${kv?`<div class="rc-kv">${kv}</div>`:''}
+      ${tech}
+      <div class="rc-actions">
+        <a class="btn-buy" href="${esc(bUrl)}" target="_blank" rel="noopener">${buyLab}</a>
+        ${best.link?`<a class="btn-src" href="${esc(best.link)}" target="_blank" rel="noopener" title="${esc(best.title)}">📰 Article</a>`:''}
+      </div>
+    </div>`;
   }
-  h+='</div>';
-  h+=`<div class="card" style="font-size:12px;color:var(--mut)">
-    <b style="color:#c5d1ec">Méthode :</b> point de départ = valeurs citées par <b style="color:#c5d1ec">Le Revenu</b>.
-    Reco croise 4 sources pondérées : 📰 Le Revenu (32 %) · 📈 technique SMA/RSI/MACD/momentum (30 %) ·
-    🌐 consensus analystes mondial ≥ ${MIN_ANALYSTS} (26 %) · 🔎 Google News presse monde (12 %).
-    ✅ = signaux concordants (confiance élevée). Cours & consensus via Yahoo Finance.</div>`;
   el.innerHTML=h;
+  const lb=el.querySelector('#legend'), bt=el.querySelector('#legend-btn');
+  bt.onclick=()=>{ lb.hidden=!lb.hidden; bt.classList.toggle('open',!lb.hidden); };
 }
 
 /* ================= Rendu : Thématiques ================= */
