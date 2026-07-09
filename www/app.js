@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.06';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.07';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -24,6 +24,7 @@ const K_PORT  = 'recoInvest:portfolio';
 const K_TARG  = 'recoInvest:targets';
 const K_CONS  = 'recoInvest:consensus';
 const K_GNEWS = 'recoInvest:gnews';
+const K_HIST  = 'recoInvest:history';
 const MIN_ANALYSTS = 5;   // consensus retenu seulement si ≥ 5 analystes
 const GNEWS = 'https://news.google.com/rss/search?hl=fr&gl=FR&ceid=FR:fr&q=';
 
@@ -105,12 +106,14 @@ let PORT = [];             // positions
 let TARGETS = {};          // nom valeur → {target, link, ts}  (objectif de cours Le Revenu)
 let CONS = {};             // ticker → {key, mean, target, n, ts}  (consensus analystes mondial)
 let GN = {};               // nom valeur → {score, n, ts}  (sentiment presse mondiale Google News)
+let HIST = [];             // historique des changements de reco
 
 try{ PORT = JSON.parse(localStorage.getItem(K_PORT)||'[]'); }catch(e){ PORT=[]; }
 try{ QUOTES = JSON.parse(localStorage.getItem(K_QUOTE)||'{}'); }catch(e){ QUOTES={}; }
 try{ TARGETS = JSON.parse(localStorage.getItem(K_TARG)||'{}'); }catch(e){ TARGETS={}; }
 try{ CONS = JSON.parse(localStorage.getItem(K_CONS)||'{}'); }catch(e){ CONS={}; }
 try{ GN = JSON.parse(localStorage.getItem(K_GNEWS)||'{}'); }catch(e){ GN={}; }
+try{ HIST = JSON.parse(localStorage.getItem(K_HIST)||'[]'); }catch(e){ HIST=[]; }
 
 /* ================= Utils ================= */
 const $ = s=>document.querySelector(s);
@@ -467,6 +470,49 @@ function renderRecos(){
   bt.onclick=()=>{ lb.hidden=!lb.hidden; bt.classList.toggle('open',!lb.hidden); };
 }
 
+/* ================= Historique des recos ================= */
+// Enregistre un point à chaque CHANGEMENT de verdict pour une valeur (date, reco, cours).
+function recordHistory(){
+  const ents=analyseEntities();
+  const today=new Date().toISOString().slice(0,10);
+  let changed=false;
+  for(const e of ents){
+    const t=byName[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
+    const v=computeVerdict({...e, ticker:t?.[2], q, tech:ts});
+    let last=null; for(let i=HIST.length-1;i>=0;i--){ if(HIST[i].name===e.name){ last=HIST[i]; break; } }
+    if(!last || last.lab!==v.lab){
+      HIST.push({ ts:Date.now(), day:today, name:e.name, ticker:t?.[2]||'',
+        lab:v.lab, cls:v.cls, composite:+v.composite.toFixed(2),
+        price:q?.price??null, target:TARGETS[e.name]?.target??null });
+      changed=true;
+    }
+  }
+  if(HIST.length>400) HIST=HIST.slice(HIST.length-400);
+  if(changed) localStorage.setItem(K_HIST,JSON.stringify(HIST));
+}
+
+function renderHistory(){
+  const el=$('#tab-hist');
+  if(!HIST.length){ el.innerHTML='<div class="empty">Aucun historique pour l\'instant.<br>Chaque changement de reco s\'enregistre au fil des actualisations.</div>'; return; }
+  let h=`<div class="rc-head"><div class="rc-count">📜 ${HIST.length} changements</div>
+    <button id="hist-clear" class="legend-btn">🗑 Vider</button></div>
+    <div class="card" style="font-size:12px;color:var(--mut);margin-bottom:12px">Un point est ajouté quand le verdict d'une valeur change. « Depuis » = évolution du cours depuis ce changement.</div>`;
+  for(let i=HIST.length-1;i>=0;i--){
+    const e=HIST[i];
+    const t=byName[e.name], q=t?QUOTES[t[2]]:null, cur=q?.price;
+    let perf=''; if(e.price&&cur){ const p=(cur/e.price-1)*100; perf=` · depuis <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`; }
+    const d=new Date(e.ts).toLocaleDateString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+    h+=`<div class="hist">
+      <span class="reco-badge ${e.cls}">${e.lab}</span>
+      <div class="hist-b"><div class="hist-n">${esc(e.name)}${e.ticker?` <span class="hist-tk">${esc(e.ticker)}</span>`:''}</div>
+        <div class="hist-m">${d} · cours ${e.price!=null?fmt(e.price)+' €':'—'}${perf}</div></div>
+    </div>`;
+  }
+  el.innerHTML=h;
+  const cb=el.querySelector('#hist-clear');
+  if(cb) cb.onclick=()=>{ if(confirm('Vider tout l\'historique des recos ?')){ HIST=[]; localStorage.removeItem(K_HIST); renderHistory(); } };
+}
+
 /* ================= Rendu : Thématiques ================= */
 function analyseThemes(){
   return THEMES.map(([name,ico,kw])=>{
@@ -625,7 +671,7 @@ function showTab(name){
   document.querySelectorAll('#tabs .chip').forEach(c=>c.classList.toggle('active',c.dataset.tab===name));
   document.querySelectorAll('.tab').forEach(t=>t.hidden=t.id!=='tab-'+name);
 }
-function renderAll(){ renderRecos(); renderThemes(); renderPortfolio(); renderAlloc(); renderMag(); }
+function renderAll(){ renderRecos(); renderThemes(); renderPortfolio(); renderHistory(); renderAlloc(); renderMag(); }
 
 async function load(force){
   const st=$('#status'), btn=$('#refresh'); btn.classList.add('spin');
@@ -651,6 +697,7 @@ async function load(force){
     renderAll();
     st.textContent='Presse mondiale (Google News)…';
     await fetchGoogleNews(ents, force);
+    recordHistory();   // enregistre les changements de reco (après toutes les sources)
     renderAll();
     st.textContent=ITEMS.length+' articles · 4 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   }catch(e){
