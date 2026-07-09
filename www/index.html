@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b1220" />
+<title>Reco Invest</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="img/icon-192.png" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div id="hero">
+      <div>
+        <div id="hero-title">Reco Invest <span id="app-ver"></span></div>
+        <div id="hero-sub">💹 Recos basées sur <b>Le Revenu</b></div>
+      </div>
+      <button id="refresh" title="Actualiser" aria-label="Actualiser">⟳</button>
+    </div>
+    <div id="tabs" class="chips">
+      <button class="chip active" data-tab="recos">🎯 Signaux</button>
+      <button class="chip" data-tab="themes">🧭 Thématiques</button>
+      <button class="chip" data-tab="port">💼 Portefeuille</button>
+      <button class="chip" data-tab="alloc">📊 Allocation</button>
+      <button class="chip" data-tab="mag">📖 Magazine</button>
+    </div>
+    <div id="status" class="status"></div>
+  </header>
+
+  <main id="main">
+    <section id="tab-recos" class="tab"></section>
+    <section id="tab-themes" class="tab" hidden></section>
+    <section id="tab-port" class="tab" hidden></section>
+    <section id="tab-alloc" class="tab" hidden></section>
+    <section id="tab-mag" class="tab" hidden></section>
+  </main>
+
+  <footer id="disclaimer">
+    ⚠️ Informations à but éducatif — <b>pas un conseil en investissement</b>.
+    Signaux générés automatiquement à partir des titres du magazine <b>Le Revenu</b>.
+    Les performances passées ne préjugent pas des performances futures.
+  </footer>
+
+  <script>window.UPDATE_REPO = 'laurentsar/reco-invest';</script>
+  <!-- app.js définit window.APP_VERSION (source unique, synchronisée par la CI depuis
+       build.gradle) ; update-check.js (defer) s'exécute après et compare à la Release GitHub. -->
+  <script src="app.js"></script>
+  <script src="update-check.js" defer></script>
+</body>
+</html>

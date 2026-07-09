@@ -1,0 +1,17 @@
+{
+  "name": "reco-invest",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Recos d'investissement : sentiment Le Revenu + analyse technique + alertes de revente semi-auto",
+  "scripts": {
+    "sync": "cap sync android",
+    "open": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/browser": "^6.0.6",
+    "@capacitor/cli": "^6.2.1",
+    "@capacitor/core": "^6.2.1",
+    "@capacitor/local-notifications": "^6.1.0"
+  }
+}

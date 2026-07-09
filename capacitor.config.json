@@ -1,0 +1,7 @@
+{
+  "appId": "com.laurent.recoinvest",
+  "appName": "Reco Invest",
+  "webDir": "www",
+  "android": { "allowMixedContent": true },
+  "plugins": { "CapacitorHttp": { "enabled": true } }
+}

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Reco Invest</string>
+    <string name="title_activity_main">Reco Invest</string>
+    <string name="package_name">com.laurent.recoinvest</string>
+    <string name="custom_url_scheme">com.laurent.recoinvest</string>
+</resources>
