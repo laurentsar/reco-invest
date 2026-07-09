@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.01';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.02';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -23,6 +23,10 @@ const K_ITEMS = 'recoInvest:items';
 const K_QUOTE = 'recoInvest:quotes';
 const K_PORT  = 'recoInvest:portfolio';
 const K_TARG  = 'recoInvest:targets';
+const K_CONS  = 'recoInvest:consensus';
+const K_GNEWS = 'recoInvest:gnews';
+const MIN_ANALYSTS = 5;   // consensus retenu seulement si ≥ 5 analystes
+const GNEWS = 'https://news.google.com/rss/search?hl=fr&gl=FR&ceid=FR:fr&q=';
 
 /* ---------- Lexique de sentiment (fr) ---------- */
 const POS = ['bondit','bondissent','rebond','rebondit','relève','relèvent','surperform','hausse',
@@ -100,10 +104,14 @@ let ITEMS = [];            // articles Le Revenu
 let QUOTES = {};           // ticker → {price, sma20,sma50,sma200, rsi, macd, sig, m1,m3,m6, vol, ts}
 let PORT = [];             // positions
 let TARGETS = {};          // nom valeur → {target, link, ts}  (objectif de cours Le Revenu)
+let CONS = {};             // ticker → {key, mean, target, n, ts}  (consensus analystes mondial)
+let GN = {};               // nom valeur → {score, n, ts}  (sentiment presse mondiale Google News)
 
 try{ PORT = JSON.parse(localStorage.getItem(K_PORT)||'[]'); }catch(e){ PORT=[]; }
 try{ QUOTES = JSON.parse(localStorage.getItem(K_QUOTE)||'{}'); }catch(e){ QUOTES={}; }
 try{ TARGETS = JSON.parse(localStorage.getItem(K_TARG)||'{}'); }catch(e){ TARGETS={}; }
+try{ CONS = JSON.parse(localStorage.getItem(K_CONS)||'{}'); }catch(e){ CONS={}; }
+try{ GN = JSON.parse(localStorage.getItem(K_GNEWS)||'{}'); }catch(e){ GN={}; }
 
 /* ================= Utils ================= */
 const $ = s=>document.querySelector(s);
@@ -222,6 +230,76 @@ async function loadQuotes(tickers, force){
   localStorage.setItem(K_QUOTE,JSON.stringify(QUOTES));
 }
 
+/* ---------- Consensus analystes mondial (Yahoo quoteSummary, crumb requis) ---------- */
+// Agrège les grands analystes sell-side (recommendationMean 1=achat fort … 5=vente),
+// objectif moyen (targetMeanPrice) et nombre d'analystes. Retenu si n ≥ MIN_ANALYSTS.
+let _crumb=null;
+async function yahooCrumb(){
+  if(_crumb) return _crumb;
+  try{ await fetch('https://fc.yahoo.com',{cache:'no-store'}); }catch(e){}
+  const r=await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb',{cache:'no-store'});
+  _crumb=(await r.text()).trim();
+  if(!_crumb || _crumb.length>32) throw new Error('crumb ko');
+  return _crumb;
+}
+async function fetchOneConsensus(ticker,crumb){
+  const url=`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=financialData&crumb=${encodeURIComponent(crumb)}`;
+  const r=await fetch(url,{cache:'no-store'}); if(!r.ok) throw new Error(r.status);
+  const fd=(await r.json())?.quoteSummary?.result?.[0]?.financialData;
+  if(!fd) throw new Error('no data');
+  return {
+    key: fd.recommendationKey||null,
+    mean: fd.recommendationMean?.raw ?? null,
+    target: fd.targetMeanPrice?.raw ?? null,
+    n: fd.numberOfAnalystOpinions?.raw ?? 0,
+    ts: Date.now()
+  };
+}
+async function fetchConsensus(tickers, force){
+  const fresh=24*3600*1000;
+  const todo=[...new Set(tickers.filter(Boolean))].filter(t=>force || !CONS[t] || Date.now()-CONS[t].ts>fresh);
+  if(!todo.length) return;
+  let crumb; try{ crumb=await yahooCrumb(); }catch(e){ return; }   // PWA/CORS : consensus indispo
+  const pool=3;
+  for(let i=0;i<todo.length;i+=pool){
+    await Promise.all(todo.slice(i,i+pool).map(async t=>{
+      try{ CONS[t]=await fetchOneConsensus(t,crumb); }catch(e){}
+    }));
+  }
+  localStorage.setItem(K_CONS,JSON.stringify(CONS));
+}
+// Direction consensus : bull / bear / neutral (null si non fiable, < MIN_ANALYSTS)
+function consView(ticker){
+  const c=CONS[ticker];
+  if(!c || (c.n||0)<MIN_ANALYSTS || c.mean==null) return null;
+  const dir = c.mean<=2.4?1 : c.mean>=3.4?-1 : 0;
+  const label = c.mean<=1.5?'Achat fort' : c.mean<=2.4?'Achat' : c.mean<=2.9?'Accumuler' : c.mean<=3.4?'Conserver' : c.mean<=4?'Alléger':'Vendre';
+  return {...c, dir, label};
+}
+
+/* ---------- Presse mondiale (Google News RSS, confirmation, pas point de départ) ---------- */
+async function fetchGoogleNews(entities, force){
+  const fresh=12*3600*1000;
+  const todo=entities.filter(e=>force || !GN[e.name] || Date.now()-GN[e.name].ts>fresh).slice(0,15);
+  const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
+  const pool=3;
+  for(let i=0;i<todo.length;i+=pool){
+    await Promise.all(todo.slice(i,i+pool).map(async e=>{
+      const q=encodeURIComponent(e.name+' action bourse');
+      const url=GNEWS+q;
+      try{
+        let xml; try{ xml=await get(url); }catch(_){ xml=await get(PROXY+encodeURIComponent(url)); }
+        const doc=new DOMParser().parseFromString(xml,'text/xml');
+        const titles=[...doc.querySelectorAll('item title')].slice(0,12).map(t=>t.textContent||'');
+        let score=0; for(const t of titles) score+=sentiment(t);
+        GN[e.name]={score, n:titles.length, ts:Date.now()};
+      }catch(err){}
+    }));
+  }
+  localStorage.setItem(K_GNEWS,JSON.stringify(GN));
+}
+function gnView(name){ const g=GN[name]; if(!g||!g.n) return null; return {...g, dir: g.score>0?1:g.score<0?-1:0}; }
+
 /* Score technique composite ∈ [-4..+4] */
 function techScore(q){
   if(!q) return {score:null};
@@ -253,16 +331,37 @@ function analyseEntities(){
   return [...map.values()];
 }
 
-/* Reco finale = 60 % technique + 40 % presse */
-function finalReco(news, tech){
-  const n = Math.max(-3,Math.min(3,news));
-  const composite = (tech!=null ? tech*0.6 : 0) + n*0.4*(tech!=null?1:1.5);
-  if(composite>=2)   return ['ACHETER','b-green'];
-  if(composite>=1)   return ['Renforcer','b-green'];
-  if(composite>=0.3) return ['Accumuler','b-amber'];
-  if(composite>-0.3) return ['Conserver','b-gray'];
-  if(composite>-1.5) return ['Alléger','b-amber'];
-  return ['VENDRE','b-red'];
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+/* Croise les 4 signaux (ancre = Le Revenu) → direction normalisée [-1,1] chacun,
+ * composite pondéré (sur les seuls signaux disponibles) + concordance. */
+function computeVerdict(e){
+  const sig=[];
+  // Le Revenu (point de départ) — poids fort
+  sig.push({k:'lr', w:0.32, dir:clamp(e.news/2,-1,1), has:true});
+  // Technique
+  sig.push({k:'tech', w:0.30, dir:e.tech==null?0:clamp(e.tech/4,-1,1), has:e.tech!=null});
+  // Consensus analystes mondial (≥5)
+  const cv=consView(e.ticker);
+  sig.push({k:'cons', w:0.26, dir:cv?clamp((3-cv.mean)/1.5,-1,1):0, has:!!cv});
+  // Google News (presse monde)
+  const gv=gnView(e.name);
+  sig.push({k:'gn', w:0.12, dir:gv?clamp(gv.score/3,-1,1):0, has:!!gv});
+
+  const avail=sig.filter(s=>s.has);
+  const wsum=avail.reduce((a,s)=>a+s.w,0)||1;
+  const composite=avail.reduce((a,s)=>a+s.dir*s.w,0)/wsum;
+  // concordance : bull/bear avec zone morte
+  const disc=d=>d>0.15?1:d<-0.15?-1:0;
+  const dirs=avail.map(s=>disc(s.dir));
+  const bull=dirs.filter(d=>d>0).length, bear=dirs.filter(d=>d<0).length;
+  let lab,cls;
+  if(composite>=0.5){lab='ACHETER';cls='b-green';}
+  else if(composite>=0.2){lab='Renforcer';cls='b-green';}
+  else if(composite>=0.05){lab='Accumuler';cls='b-amber';}
+  else if(composite>-0.05){lab='Conserver';cls='b-gray';}
+  else if(composite>-0.4){lab='Alléger';cls='b-amber';}
+  else{lab='VENDRE';cls='b-red';}
+  return {lab,cls,composite,nSig:avail.length,bull,bear,cv,gv};
 }
 
 /* ================= Rendu : Signaux ================= */
@@ -272,16 +371,11 @@ function renderRecos(){
   if(!ents.length){ el.innerHTML='<div class="empty">Aucune valeur identifiée dans l\'édition en cours.<br>Tire ⟳ pour actualiser.</div>'; return; }
   const scored = ents.map(e=>{
     const t=byName[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
-    return {...e, ticker:t?.[2], q, tech:ts};
-  }).sort((a,b)=>{
-    const ca=(a.tech??0)*0.6+a.news*0.4, cb=(b.tech??0)*0.6+b.news*0.4;
-    return cb-ca;
-  });
-  let h=`<div class="card"><div class="sec-h">🎯 Signaux · ${scored.length} valeurs · presse + technique</div>`;
+    const o={...e, ticker:t?.[2], q, tech:ts}; o.v=computeVerdict(o); return o;
+  }).sort((a,b)=>b.v.composite-a.v.composite);
+  let h=`<div class="card"><div class="sec-h">🎯 Signaux · ${scored.length} valeurs · 4 sources croisées</div>`;
   for(const e of scored){
-    const [lab,cls]=finalReco(e.news,e.tech);
-    const best=e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0];
-    const q=e.q;
+    const v=e.v, best=e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0], q=e.q;
     let quant='';
     if(q){
       const trend = q.sma200!=null ? (q.price>q.sma50&&q.price>q.sma200?'📈 haussière':q.price<q.sma50&&q.price<q.sma200?'📉 baissière':'↔️ mixte') : '—';
@@ -293,32 +387,48 @@ function renderRecos(){
         <span>RSI ${q.rsi==null?'—':Math.round(q.rsi)}${rsiState}</span>
         <span>MACD ${macdS}</span>
         <span>Perf 3M ${q.m3==null?'—':(q.m3>0?'+':'')+q.m3.toFixed(1)+'%'}</span>
-        <span>Vol ${q.vol==null?'—':q.vol.toFixed(0)+'%'}</span>
       </div>`;
     } else if(e.ticker){ quant='<div class="quant"><span>Cours indisponible (technique ignorée)</span></div>'; }
-    // objectif de cours Le Revenu + potentiel vs cours actuel
-    let objline='';
-    const tg=TARGETS[e.name]?.target;
-    if(tg){
-      let up=''; if(q?.price){ const p=(tg/q.price-1)*100; up=` · potentiel <b style="color:${p>=0?'#5ef08a':'#ff7a7a'}">${p>=0?'+':''}${p.toFixed(1)}%</b>`; }
-      objline=`<div class="obj">🎯 Objectif Le Revenu <b>${fmt(tg)} €</b>${up}</div>`;
-    }
-    const sign=e.news>0?'+':'';
+    // objectif Le Revenu + potentiel
+    let objline=''; const tg=TARGETS[e.name]?.target;
+    if(tg){ let up=''; if(q?.price){ const p=(tg/q.price-1)*100; up=` · potentiel <b style="color:${p>=0?'#5ef08a':'#ff7a7a'}">${p>=0?'+':''}${p.toFixed(1)}%</b>`; }
+      objline=`<div class="obj">🎯 Objectif Le Revenu <b>${fmt(tg)} €</b>${up}</div>`; }
+    // consensus analystes mondial
+    let consline='';
+    if(v.cv){ let up=''; if(q?.price && v.cv.target){ const p=(v.cv.target/q.price-1)*100; up=` · potentiel ${p>=0?'+':''}${p.toFixed(1)}%`; }
+      consline=`<div class="obj" style="background:#122a1a;border-color:#1f5b38">🌐 Consensus mondial <b>${esc(v.cv.label)}</b> · ${v.cv.n} analystes${v.cv.target?` · objectif moyen ${fmt(v.cv.target)}`:''}${up}</div>`; }
+    // 4 sources : icônes directionnelles
+    const arrow=d=>d>0.15?'🟢':d<-0.15?'🔴':'⚪';
+    const gv=v.gv;
+    const srcs=`<div class="srcs">
+      <span>📰 LR ${arrow(clamp(e.news/2,-1,1))}</span>
+      <span>📈 Tech ${e.tech==null?'—':arrow(e.tech/4)}</span>
+      <span>🌐 Consensus ${v.cv?arrow((3-v.cv.mean)/1.5):'—'}</span>
+      <span>🔎 Google ${gv?arrow(gv.score/3):'—'}</span>
+    </div>`;
+    // concordance
+    const conc = v.nSig>=2 ? (v.bull>=v.nSig && v.bull>=3 ? `<span class="conc ok">✅ ${v.bull}/${v.nSig} concordants</span>`
+      : v.bear>=v.nSig && v.bear>=3 ? `<span class="conc ko">⛔ ${v.bear}/${v.nSig} négatifs</span>`
+      : v.bull>v.bear ? `<span class="conc mid">↗︎ ${v.bull}/${v.nSig} positifs</span>`
+      : v.bear>v.bull ? `<span class="conc mid">↘︎ ${v.bear}/${v.nSig} négatifs</span>`
+      : `<span class="conc mid">↔︎ signaux partagés</span>`) : '';
     h+=`<div class="reco">
-      <div class="reco-badge ${cls}">${lab}</div>
+      <div class="reco-badge ${v.cls}">${v.lab}</div>
       <div class="reco-body">
-        <div class="reco-name">${esc(e.name)}</div>
-        <div class="reco-meta">Presse ${sign}${e.news} (${e.mentions} art.) · Technique ${e.tech==null?'n/a':(e.tech>0?'+':'')+e.tech}</div>
+        <div class="reco-name">${esc(e.name)} ${conc}</div>
+        ${srcs}
         ${quant}
         ${objline}
+        ${consline}
         <div class="reco-just">${best.link?`<a href="${esc(best.link)}" target="_blank" rel="noopener">${esc(best.title)}</a>`:esc(best.title)}</div>
       </div></div>`;
   }
   h+='</div>';
   h+=`<div class="card" style="font-size:12px;color:var(--mut)">
-    <b style="color:#c5d1ec">Méthode :</b> reco = 60 % signal technique (SMA 20/50/200, RSI 14, MACD 12-26-9, momentum 3M)
-    + 40 % sentiment presse Le Revenu. 🎯 Objectif = cours cible extrait des articles conseils/avis
-    du Revenu ; potentiel = écart avec le cours Yahoo. Cours réels via Yahoo Finance.</div>`;
+    <b style="color:#c5d1ec">Méthode :</b> point de départ = valeurs citées par <b style="color:#c5d1ec">Le Revenu</b>.
+    Reco croise 4 sources pondérées : 📰 Le Revenu (32 %) · 📈 technique SMA/RSI/MACD/momentum (30 %) ·
+    🌐 consensus analystes mondial ≥ ${MIN_ANALYSTS} (26 %) · 🔎 Google News presse monde (12 %).
+    ✅ = signaux concordants (confiance élevée). Cours & consensus via Yahoo Finance.</div>`;
   el.innerHTML=h;
 }
 
@@ -503,7 +613,13 @@ async function load(force){
     st.textContent='Objectifs de cours (Le Revenu)…';
     await fetchTargets(ents, force);
     renderAll();
-    st.textContent=ITEMS.length+' articles · cours au '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+    st.textContent='Consensus analystes mondial…';
+    await fetchConsensus([...new Set([...cited,...held])], force);
+    renderAll();
+    st.textContent='Presse mondiale (Google News)…';
+    await fetchGoogleNews(ents, force);
+    renderAll();
+    st.textContent=ITEMS.length+' articles · 4 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   }catch(e){
     if(!ITEMS.length) st.textContent='⚠️ Hors-ligne et aucun cache.';
     else st.textContent='⚠️ Actualisation partielle — cache affiché.';
