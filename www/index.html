@@ -42,10 +42,8 @@
     Les performances passées ne préjugent pas des performances futures.
   </footer>
 
-  <script>window.UPDATE_REPO = 'laurentsar/reco-invest';</script>
-  <!-- app.js définit window.APP_VERSION (source unique, synchronisée par la CI depuis
-       build.gradle) ; update-check.js (defer) s'exécute après et compare à la Release GitHub. -->
+  <!-- MAJ auto gérée dans app.js (checkForUpdate) : bannière « ⬇ Installer » native
+       via UpdatePlugin.downloadAndInstall, calquée sur flux-rss. -->
   <script src="app.js"></script>
-  <script src="update-check.js" defer></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
-const CACHE = 'reco-invest-v5';
+const CACHE = 'reco-invest-v6';
 const SHELL = [
-  './', './index.html', './styles.css', './app.js', './update-check.js',
+  './', './index.html', './styles.css', './app.js',
   './manifest.webmanifest', './img/icon-192.png', './img/icon-512.png',
 ];
 self.addEventListener('install', (e) => {

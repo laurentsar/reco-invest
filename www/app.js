@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.04';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.05';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -656,11 +656,53 @@ async function load(force){
   }finally{ btn.classList.remove('spin'); }
 }
 
+/* ================= Mise à jour auto (calqué sur flux-rss) ================= */
+const GH_REPO='laurentsar/reco-invest';
+const isNative = !!(window.Capacitor && (window.Capacitor.isNativePlatform?.() || window.Capacitor.Plugins?.UpdatePlugin));
+function versionGt(tag,cur){
+  const p=v=>String(v).replace(/^v/,'').split('.').map(n=>parseInt(n,10)||0);
+  const [la,lb=0,lc=0]=p(tag), [ca,cb=0,cc=0]=p(cur);
+  return la>ca || (la===ca&&(lb>cb || (lb===cb&&lc>cc)));
+}
+function showUpdateBanner(tag, apkUrl){
+  const ex=document.getElementById('update-banner'); if(ex) ex.remove();
+  const el=document.createElement('div'); el.id='update-banner';
+  el.innerHTML=`<span class="upd-msg">🆕 Version <b>${esc(tag)}</b> disponible</span>`+
+    `<button class="upd-btn" id="btn-update">⬇ Installer</button>`+
+    `<button class="upd-x" id="btn-dismiss-update" aria-label="Ignorer">✕</button>`;
+  document.body.appendChild(el);
+  el.querySelector('#btn-dismiss-update').onclick=()=>{ localStorage.setItem('dismissedUpdate',tag); el.remove(); };
+  el.querySelector('#btn-update').onclick=async()=>{
+    const btn=el.querySelector('#btn-update'); btn.textContent='⏳…'; btn.disabled=true;
+    try{
+      const UP=window.Capacitor?.Plugins?.UpdatePlugin;
+      if(UP?.downloadAndInstall){ await UP.downloadAndInstall({url:apkUrl}); }
+      else window.open(apkUrl,'_blank','noopener');
+    }catch(e){
+      btn.textContent='⬇ Installer'; btn.disabled=false;
+      if(String(e?.message||e).includes('permission')) alert('Autorise l\'installation d\'apps depuis cette source dans les paramètres Android, puis réessaie.');
+      else alert('Erreur MAJ : '+(e?.message||e));
+    }
+  };
+}
+async function checkForUpdate(){
+  try{
+    const r=await fetch(`https://api.github.com/repos/${GH_REPO}/releases/latest?_=${Date.now()}`,{cache:'no-store',headers:{Accept:'application/vnd.github+json'}});
+    if(!r.ok) return;
+    const d=await r.json(); const tag=d.tag_name||'';
+    if(!tag || !versionGt(tag,APP_VERSION)) return;
+    if(localStorage.getItem('dismissedUpdate')===tag) return;
+    const asset=(d.assets||[]).find(a=>a.name && a.name.endsWith('.apk'));
+    showUpdateBanner(tag, asset?asset.browser_download_url:d.html_url);
+  }catch(e){ /* réseau/API indispo — silencieux */ }
+}
+
 document.addEventListener('DOMContentLoaded',()=>{
   $('#app-ver').textContent='v'+APP_VERSION;
   document.querySelectorAll('#tabs .chip').forEach(c=>c.onclick=()=>showTab(c.dataset.tab));
   $('#refresh').onclick=()=>load(true);
   renderAll();
   load(false);
+  setTimeout(checkForUpdate, 2500);
 });
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
