@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.00';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.01';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -22,6 +22,7 @@ const YF     = 'https://query1.finance.yahoo.com/v8/finance/chart/';
 const K_ITEMS = 'recoInvest:items';
 const K_QUOTE = 'recoInvest:quotes';
 const K_PORT  = 'recoInvest:portfolio';
+const K_TARG  = 'recoInvest:targets';
 
 /* ---------- Lexique de sentiment (fr) ---------- */
 const POS = ['bondit','bondissent','rebond','rebondit','relève','relèvent','surperform','hausse',
@@ -98,9 +99,11 @@ const SEED_ITEMS = [
 let ITEMS = [];            // articles Le Revenu
 let QUOTES = {};           // ticker → {price, sma20,sma50,sma200, rsi, macd, sig, m1,m3,m6, vol, ts}
 let PORT = [];             // positions
+let TARGETS = {};          // nom valeur → {target, link, ts}  (objectif de cours Le Revenu)
 
 try{ PORT = JSON.parse(localStorage.getItem(K_PORT)||'[]'); }catch(e){ PORT=[]; }
 try{ QUOTES = JSON.parse(localStorage.getItem(K_QUOTE)||'{}'); }catch(e){ QUOTES={}; }
+try{ TARGETS = JSON.parse(localStorage.getItem(K_TARG)||'{}'); }catch(e){ TARGETS={}; }
 
 /* ================= Utils ================= */
 const $ = s=>document.querySelector(s);
@@ -122,6 +125,53 @@ async function fetchRss(){
   })).filter(i=>i.title);
   if(!items.length) throw new Error('flux vide');
   return items;
+}
+
+/* ---------- Objectifs de cours (scraping éditorial gratuit lerevenu.com) ---------- */
+// Le corps des articles conseils/avis est server-rendered → extraction d'un objectif chiffré.
+function parseTarget(txt){
+  const pats=[
+    /objectif de cours\s*:?\s*(?:port[ée]e?\s*[àa]\s*)?([\d  .]+(?:,\d+)?)\s*(?:euros?|€)/i,
+    /objectif\s*(?:de cours)?\s*(?:port[ée]e?\s*)?[àa:]\s*([\d  .]+(?:,\d+)?)\s*(?:euros?|€)/i,
+    /cours cible\s*(?:de\s*)?[:]?\s*([\d  .]+(?:,\d+)?)\s*(?:euros?|€)/i,
+    /valoris[ee]\s+(?:l['e]?\s*\w+\s+)?[àa]\s*([\d  .]+(?:,\d+)?)\s*(?:euros?|€)/i,
+  ];
+  for(const re of pats){
+    const m=txt.match(re);
+    if(m){ const n=parseFloat(m[1].replace(/[  .\s]/g,'').replace(',','.')); if(n>0&&n<100000) return n; }
+  }
+  return null;
+}
+
+async function fetchArticleText(link){
+  const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
+  let html; try{ html=await get(link); }catch(e){ html=await get(PROXY+encodeURIComponent(link)); }
+  return html.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ')
+             .replace(/<[^>]+>/g,' ').replace(/&[a-z]+;/gi,' ');
+}
+
+/* Récupère les objectifs de cours des valeurs citées (articles conseils/avis en priorité). */
+async function fetchTargets(entities, force){
+  const fresh=24*3600*1000;
+  // 1 lien par valeur : privilégie conseils-bourse / avis-des-pros
+  const jobs=[];
+  for(const e of entities){
+    if(!force && TARGETS[e.name] && Date.now()-TARGETS[e.name].ts<fresh) continue;
+    const arts=e.arts.filter(a=>a.link && /^https?:/.test(a.link));
+    const pref=arts.find(a=>/conseils-bourse|avis-des-pros|coeur-operations/.test(a.link))||arts[0];
+    if(pref) jobs.push({name:e.name,link:pref.link});
+  }
+  const pool=3, todo=jobs.slice(0,15);
+  for(let i=0;i<todo.length;i+=pool){
+    await Promise.all(todo.slice(i,i+pool).map(async j=>{
+      try{
+        const txt=await fetchArticleText(j.link);
+        const target=parseTarget(txt);
+        TARGETS[j.name]={target:target||null, link:j.link, ts:Date.now()};
+      }catch(e){ TARGETS[j.name]={target:TARGETS[j.name]?.target||null, link:j.link, ts:Date.now()}; }
+    }));
+  }
+  localStorage.setItem(K_TARG,JSON.stringify(TARGETS));
 }
 
 /* ================= Indicateurs quantitatifs ================= */
@@ -246,6 +296,13 @@ function renderRecos(){
         <span>Vol ${q.vol==null?'—':q.vol.toFixed(0)+'%'}</span>
       </div>`;
     } else if(e.ticker){ quant='<div class="quant"><span>Cours indisponible (technique ignorée)</span></div>'; }
+    // objectif de cours Le Revenu + potentiel vs cours actuel
+    let objline='';
+    const tg=TARGETS[e.name]?.target;
+    if(tg){
+      let up=''; if(q?.price){ const p=(tg/q.price-1)*100; up=` · potentiel <b style="color:${p>=0?'#5ef08a':'#ff7a7a'}">${p>=0?'+':''}${p.toFixed(1)}%</b>`; }
+      objline=`<div class="obj">🎯 Objectif Le Revenu <b>${fmt(tg)} €</b>${up}</div>`;
+    }
     const sign=e.news>0?'+':'';
     h+=`<div class="reco">
       <div class="reco-badge ${cls}">${lab}</div>
@@ -253,13 +310,15 @@ function renderRecos(){
         <div class="reco-name">${esc(e.name)}</div>
         <div class="reco-meta">Presse ${sign}${e.news} (${e.mentions} art.) · Technique ${e.tech==null?'n/a':(e.tech>0?'+':'')+e.tech}</div>
         ${quant}
+        ${objline}
         <div class="reco-just">${best.link?`<a href="${esc(best.link)}" target="_blank" rel="noopener">${esc(best.title)}</a>`:esc(best.title)}</div>
       </div></div>`;
   }
   h+='</div>';
   h+=`<div class="card" style="font-size:12px;color:var(--mut)">
     <b style="color:#c5d1ec">Méthode :</b> reco = 60 % signal technique (SMA 20/50/200, RSI 14, MACD 12-26-9, momentum 3M)
-    + 40 % sentiment presse Le Revenu. Cours réels via Yahoo Finance.</div>`;
+    + 40 % sentiment presse Le Revenu. 🎯 Objectif = cours cible extrait des articles conseils/avis
+    du Revenu ; potentiel = écart avec le cours Yahoo. Cours réels via Yahoo Finance.</div>`;
   el.innerHTML=h;
 }
 
@@ -435,10 +494,14 @@ async function load(force){
     localStorage.setItem(K_ITEMS,JSON.stringify({ts:Date.now(),items:ITEMS}));
     renderRecos(); renderThemes();
     // tickers = valeurs citées + positions
-    const cited = analyseEntities().map(e=>byName[e.name]?.[2]).filter(Boolean);
+    const ents  = analyseEntities();
+    const cited = ents.map(e=>byName[e.name]?.[2]).filter(Boolean);
     const held  = PORT.map(p=>p.ticker).filter(Boolean);
     st.textContent='Cours & indicateurs techniques…';
     await loadQuotes([...new Set([...cited,...held])], force);
+    renderAll();
+    st.textContent='Objectifs de cours (Le Revenu)…';
+    await fetchTargets(ents, force);
     renderAll();
     st.textContent=ITEMS.length+' articles · cours au '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   }catch(e){
