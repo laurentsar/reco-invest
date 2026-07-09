@@ -12,12 +12,11 @@
  */
 'use strict';
 
-const APP_VERSION = '1.02';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.03';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
-const CAFEYN       = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
-const CAFEYN_HEBDO = 'https://www.cafeyn.co/fr/magazines/le-revenu-hebdo';
+const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
 const YF     = 'https://query1.finance.yahoo.com/v8/finance/chart/';
 const K_ITEMS = 'recoInvest:items';
 const K_QUOTE = 'recoInvest:quotes';
@@ -574,17 +573,15 @@ function openMag(url,title){
 }
 function renderMag(){
   const el=$('#tab-mag');
-  el.innerHTML=`<button class="mag-btn" id="mag-open">📖 Lire Le Revenu<small>Mensuel placements — Cafeyn (abonnement requis)</small></button>
-    <button class="mag-btn" id="mag-hebdo" style="background:linear-gradient(135deg,#8a4a00,#4a2600)">📈 Le Revenu Hebdo Bourse<small>Sélections d'actions hebdo — Cafeyn (abonnement requis)</small></button>
+  el.innerHTML=`<button class="mag-btn" id="mag-open">📖 Lire Le Revenu<small>Cafeyn (abonnement requis)</small></button>
     <div class="card mag-links">
       <a href="https://www.lerevenu.com/bourse" target="_blank" rel="noopener">Actus Bourse — lerevenu.com <span>▸</span></a>
       <a href="https://www.lerevenu.com/placements" target="_blank" rel="noopener">Placements <span>▸</span></a>
       <a href="https://www.lerevenu.com/immobilier" target="_blank" rel="noopener">Immobilier <span>▸</span></a>
       <a href="https://www.lerevenu.com/impots" target="_blank" rel="noopener">Impôts & fiscalité <span>▸</span></a>
     </div>
-    <div class="card" style="font-size:12.5px;color:var(--mut)">Signaux et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu. Les sélections détaillées de l'Hebdo Bourse (payantes) se lisent dans le magazine ci-dessus.</div>`;
+    <div class="card" style="font-size:12.5px;color:var(--mut)">Signaux et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu.</div>`;
   el.querySelector('#mag-open').onclick=()=>openMag(CAFEYN,'Le Revenu');
-  el.querySelector('#mag-hebdo').onclick=()=>openMag(CAFEYN_HEBDO,'Le Revenu Hebdo Bourse');
 }
 
 /* ================= Navigation / chargement ================= */
