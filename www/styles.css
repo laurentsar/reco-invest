@@ -75,7 +75,12 @@ body{
 .rc-sub .muted{color:var(--mut)}
 .rc-verdict{flex:none; display:flex; flex-direction:column; align-items:flex-end; gap:5px}
 .rc-dots{display:flex; gap:12px; margin:11px 0 4px; font-size:15px}
-.rc-dots span{cursor:help; white-space:nowrap}
+.rc-dots .dotitem{cursor:pointer; white-space:nowrap; user-select:none; padding:2px 4px; border-radius:8px}
+.rc-dots .dotitem:active{background:#0e1729}
+#dot-tip{position:fixed; z-index:10000; max-width:min(280px,86vw); background:#0e1a30; color:#e8eefc;
+  border:1px solid var(--accent); border-radius:11px; padding:10px 13px; font-size:12.5px; line-height:1.5;
+  box-shadow:0 8px 26px rgba(0,0,0,.55); pointer-events:none}
+#dot-tip[hidden]{display:none}
 .rc-kv{margin:8px 0 2px; border-top:1px solid var(--line); padding-top:8px}
 .kv{display:flex; justify-content:space-between; gap:10px; font-size:12.5px; padding:3px 0}
 .kv>span{color:var(--mut)}

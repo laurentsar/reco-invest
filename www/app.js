@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.05';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.06';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -408,12 +408,16 @@ function renderRecos(){
     const v=e.v, best=e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0], q=e.q;
     const lrDir=clamp(e.news/2,-1,1), techDir=e.tech==null?null:e.tech/4,
           consDir=v.cv?(3-v.cv.mean)/1.5:null, gDir=v.gv?v.gv.score/3:null;
-    // pastilles 4 sources avec info-bulle (title)
+    // pastilles 4 sources : tap → bulle légende (data-tip) + survol (title)
+    const dotSpan=(icon,dir,tip)=>{
+      const d=dir==null?'⚫':dot(dir);
+      return `<span class="dotitem" data-tip="${esc(tip)}" title="${esc(tip)}">${icon}${d}</span>`;
+    };
     const dots=`<div class="rc-dots">
-      <span title="Le Revenu (presse) — ${lrDir>0.15?'positif':lrDir<-0.15?'négatif':'neutre'}">📰${dot(lrDir)}</span>
-      <span title="Analyse technique — ${techDir==null?'indispo':techDir>0.15?'haussière':techDir<-0.15?'baissière':'neutre'}">📈${techDir==null?'⚫':dot(techDir)}</span>
-      <span title="Consensus analystes mondial — ${v.cv?v.cv.label+' ('+v.cv.n+' analystes)':'indispo (< '+MIN_ANALYSTS+' ou hors ligne)'}">🌐${consDir==null?'⚫':dot(consDir)}</span>
-      <span title="Google News (presse monde) — ${gDir==null?'indispo':gDir>0.15?'positif':gDir<-0.15?'négatif':'neutre'}">🔎${gDir==null?'⚫':dot(gDir)}</span>
+      ${dotSpan('📰',lrDir,`Le Revenu (presse) — 32 % du score. ${lrDir>0.15?'🟢 Positif':lrDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. C'est le point de départ : valeurs citées + ton des articles.`)}
+      ${dotSpan('📈',techDir,`Analyse technique — 30 %. ${techDir==null?'⚫ Cours indisponible':techDir>0.15?'🟢 Haussière':techDir<-0.15?'🔴 Baissière':'⚪ Neutre'}. SMA 20/50/200, RSI 14, MACD, momentum 3M.`)}
+      ${dotSpan('🌐',consDir,`Consensus analystes mondial — 26 %. ${v.cv?(v.cv.dir>0?'🟢':v.cv.dir<0?'🔴':'⚪')+' '+v.cv.label+' · '+v.cv.n+' analystes'+(v.cv.target?' · objectif moyen '+fmt(v.cv.target)+' €':''):'⚫ Indispo (< '+MIN_ANALYSTS+' analystes ou hors ligne / PWA)'}.`)}
+      ${dotSpan('🔎',gDir,`Google News (presse monde) — 12 %. ${gDir==null?'⚫ Indispo':gDir>0.15?'🟢 Positif':gDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. Sentiment agrégé de la presse mondiale.`)}
     </div>`;
     // concordance
     const conc = v.nSig>=2 ? (v.bull>=v.nSig && v.bull>=3 ? `<span class="conc ok" title="Toutes les sources s'alignent">✅ ${v.bull}/${v.nSig}</span>`
@@ -697,10 +701,31 @@ async function checkForUpdate(){
   }catch(e){ /* réseau/API indispo — silencieux */ }
 }
 
+/* Bulle légende au TAP sur une pastille de source (mobile-friendly, une seule
+   bulle partagée, positionnée près du point touché, fermée au tap ailleurs). */
+function ensureDotTip(){
+  if(window._dotTipBound) return; window._dotTipBound=true;
+  let tip=document.getElementById('dot-tip');
+  if(!tip){ tip=document.createElement('div'); tip.id='dot-tip'; tip.hidden=true; document.body.appendChild(tip); }
+  document.addEventListener('click',ev=>{
+    const span=ev.target.closest && ev.target.closest('.dotitem');
+    if(span && span.dataset.tip){
+      tip.textContent=span.dataset.tip; tip.hidden=false;
+      const r=span.getBoundingClientRect(), tw=tip.offsetWidth, th=tip.offsetHeight;
+      let left=Math.max(8, Math.min(r.left+r.width/2-tw/2, window.innerWidth-tw-8));
+      let top=r.top-th-8; if(top<8) top=r.bottom+8;
+      tip.style.left=left+'px'; tip.style.top=top+'px';
+    } else {
+      tip.hidden=true;
+    }
+  });
+}
+
 document.addEventListener('DOMContentLoaded',()=>{
   $('#app-ver').textContent='v'+APP_VERSION;
   document.querySelectorAll('#tabs .chip').forEach(c=>c.onclick=()=>showTab(c.dataset.tab));
   $('#refresh').onclick=()=>load(true);
+  ensureDotTip();
   renderAll();
   load(false);
   setTimeout(checkForUpdate, 2500);
