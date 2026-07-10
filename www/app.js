@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.07';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.08';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -25,8 +25,15 @@ const K_TARG  = 'recoInvest:targets';
 const K_CONS  = 'recoInvest:consensus';
 const K_GNEWS = 'recoInvest:gnews';
 const K_HIST  = 'recoInvest:history';
+const K_ZB    = 'recoInvest:zonebourse';
+const K_ZBID  = 'recoInvest:zbid';
+const K_TV    = 'recoInvest:tradingview';
+const K_SA    = 'recoInvest:stockanalysis';
 const MIN_ANALYSTS = 5;   // consensus retenu seulement si ≥ 5 analystes
 const GNEWS = 'https://news.google.com/rss/search?hl=fr&gl=FR&ceid=FR:fr&q=';
+const ZONEBOURSE = 'https://www.zonebourse.com';
+const TRADINGVIEW = 'https://www.tradingview.com';
+const STOCKANALYSIS = 'https://stockanalysis.com';
 
 /* ---------- Lexique de sentiment (fr) ---------- */
 const POS = ['bondit','bondissent','rebond','rebondit','relève','relèvent','surperform','hausse',
@@ -61,6 +68,21 @@ const ENTITIES = [
   ['Apple',['apple'],'AAPL'],['Microsoft',['microsoft'],'MSFT'],['Tesla',['tesla'],'TSLA'],['Boeing',['boeing'],'BA']
 ];
 const byName = Object.fromEntries(ENTITIES.map(e=>[e[0],e]));
+
+/* ---------- ETF / trackers : nom, alias, ticker Yahoo (tickers vérifiés) ---------- */
+const ETFS = [
+  ['Amundi MSCI World',['amundi msci world','msci world','actions mondiales'],'CW8.PA'],
+  ['Vanguard FTSE All-World',['vanguard ftse all-world','ftse all-world'],'VWCE.DE'],
+  ['Amundi PEA S&P 500',['s&p 500','s&p500','wall street'],'PE500.PA'],
+  ['SPDR S&P 500 (SPY)',['spdr s&p 500','etf spy'],'SPY'],
+  ['Invesco EQQQ Nasdaq-100',['nasdaq-100','nasdaq 100','valeurs technologiques américaines'],'EQQQ.PA'],
+  ['Invesco QQQ (Nasdaq)',['invesco qqq','etf qqq'],'QQQ'],
+  ['Amundi CAC 40',['cac 40','cac40'],'C40.PA'],
+  ['Amundi PEA Émergents',['marchés émergents','pays émergents','msci emerging'],'PAEEM.PA'],
+  ['Amundi PEA Asie Émergente',['asie émergente','msci emerging asia'],'PAASI.PA'],
+  ['Xtrackers Or physique',['once d\'or','cours de l\'or','matières premières','métaux précieux'],'XAD1.DE'],
+];
+const byNameETF = Object.fromEntries(ETFS.map(e=>[e[0],e]));
 
 /* ---------- Thématiques ---------- */
 const THEMES = [
@@ -107,6 +129,10 @@ let TARGETS = {};          // nom valeur → {target, link, ts}  (objectif de co
 let CONS = {};             // ticker → {key, mean, target, n, ts}  (consensus analystes mondial)
 let GN = {};               // nom valeur → {score, n, ts}  (sentiment presse mondiale Google News)
 let HIST = [];             // historique des changements de reco
+let ZB = {};                // nom valeur → {label, note, target, n, ts}  (consensus Zonebourse, France)
+let ZBID = {};               // nom valeur → id fiche Zonebourse (cache, évite une recherche à chaque rafraîchissement)
+let TV = {};                 // nom valeur → {rating, dir, ts}  (jauge technique TradingView)
+let SA = {};                 // nom valeur → {label, target, ts}  (consensus + objectif StockAnalysis.com)
 
 try{ PORT = JSON.parse(localStorage.getItem(K_PORT)||'[]'); }catch(e){ PORT=[]; }
 try{ QUOTES = JSON.parse(localStorage.getItem(K_QUOTE)||'{}'); }catch(e){ QUOTES={}; }
@@ -114,6 +140,10 @@ try{ TARGETS = JSON.parse(localStorage.getItem(K_TARG)||'{}'); }catch(e){ TARGET
 try{ CONS = JSON.parse(localStorage.getItem(K_CONS)||'{}'); }catch(e){ CONS={}; }
 try{ GN = JSON.parse(localStorage.getItem(K_GNEWS)||'{}'); }catch(e){ GN={}; }
 try{ HIST = JSON.parse(localStorage.getItem(K_HIST)||'[]'); }catch(e){ HIST=[]; }
+try{ ZB = JSON.parse(localStorage.getItem(K_ZB)||'{}'); }catch(e){ ZB={}; }
+try{ ZBID = JSON.parse(localStorage.getItem(K_ZBID)||'{}'); }catch(e){ ZBID={}; }
+try{ TV = JSON.parse(localStorage.getItem(K_TV)||'{}'); }catch(e){ TV={}; }
+try{ SA = JSON.parse(localStorage.getItem(K_SA)||'{}'); }catch(e){ SA={}; }
 
 /* ================= Utils ================= */
 const $ = s=>document.querySelector(s);
@@ -279,15 +309,188 @@ function consView(ticker){
   return {...c, dir, label};
 }
 
+/* ---------- Consensus Zonebourse (France, groupe MarketScreener) ---------- */
+// Recherche la fiche de la valeur, puis lit le bloc #consensusDetail (jauge « Note X/10 »,
+// recommandation moyenne, objectif de cours moyen, nb d'analystes). Retenu si n ≥ MIN_ANALYSTS.
+async function zbResolveId(name, mnemo){
+  if(ZBID[name]) return ZBID[name];
+  const url=ZONEBOURSE+'/recherche/?q='+encodeURIComponent(name);
+  const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
+  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  let fallback=null, best=null;
+  for(const row of doc.querySelectorAll('tr')){
+    const a=row.querySelector('a[href^="/cours/action/"]');
+    if(!a) continue;
+    const href=a.getAttribute('href');
+    if(/\/(actualite|societe)\//.test(href)) continue;
+    if(!fallback) fallback=href;
+    const mn=row.querySelector('[aria-label="Mnemo"]')?.textContent.trim();
+    if(mnemo && mn && mn.toUpperCase()===mnemo.toUpperCase()){ best=href; break; }
+  }
+  const href=best||fallback;
+  if(!href) throw new Error('valeur introuvable sur Zonebourse');
+  const id=href.replace(/^\/|\/$/g,'');
+  ZBID[name]=id;
+  localStorage.setItem(K_ZBID,JSON.stringify(ZBID));
+  return id;
+}
+async function fetchOneZonebourse(name,mnemo){
+  const id=await zbResolveId(name,mnemo);
+  const url=ZONEBOURSE+'/'+id+'/';
+  const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
+  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  const box=doc.querySelector('#consensusDetail');
+  if(!box) throw new Error('bloc consensus indisponible');
+  const kv={};
+  box.querySelectorAll('.grid').forEach(row=>{
+    const cells=row.querySelectorAll(':scope > div');
+    if(cells.length>=2) kv[cells[0].textContent.trim()]=cells[1].textContent.trim();
+  });
+  const gaugeTitle=box.querySelector('.consensus-gauge')?.getAttribute('title')||'';
+  const m=gaugeTitle.match(/([\d.,]+)\s*\/\s*10/);
+  const note=m?parseFloat(m[1].replace(',','.')):null;
+  const n=parseInt((kv["Nombre d'Analystes"]||'').replace(/\D/g,''),10)||0;
+  const target=parseFloat((kv['Objectif de cours Moyen']||'').replace(/[^\d,.-]/g,'').replace(',','.'))||null;
+  return { label: kv['Recommandation moyenne']||null, note, n, target, ts:Date.now() };
+}
+async function fetchZonebourse(entities, force, byNameMap=byName){
+  const fresh=24*3600*1000;
+  const todo=entities.filter(e=>force || !ZB[e.name] || Date.now()-ZB[e.name].ts>fresh).slice(0,15);
+  const pool=2;
+  for(let i=0;i<todo.length;i+=pool){
+    await Promise.all(todo.slice(i,i+pool).map(async e=>{
+      const t=byNameMap[e.name], mnemo=t?.[2]?.replace(/\.[A-Z]+$/,'')||null;
+      try{ ZB[e.name]=await fetchOneZonebourse(e.name,mnemo); }
+      catch(err){ /* garde l'ancien si présent — source parfois protégée anti-bot */ }
+    }));
+  }
+  localStorage.setItem(K_ZB,JSON.stringify(ZB));
+}
+// Direction Zonebourse : jauge 0 (Vente) → 10 (Achat), normalisée en [-1,1]
+function zbView(name){
+  const z=ZB[name];
+  if(!z || (z.n||0)<MIN_ANALYSTS || z.note==null) return null;
+  const dir=clamp((z.note-5)/5,-1,1);
+  return {...z, dir};
+}
+
+/* ---------- Jauge technique TradingView (Summary : Strong Sell…Strong Buy) ----------
+ * Recoupe le signal Technique déjà calculé en interne (même famille : SMA/RSI/MACD…),
+ * ce n'est PAS une source indépendante — voir légende. Symbole résolu par une table de
+ * correspondance fixe (leur API de recherche est bloquée aux requêtes automatisées). */
+const TV_SUFFIX_EXCHANGE = {'.PA':'EURONEXT', '.DE':'XETR', '.HE':'OMXHEX'};
+const TV_BARE_EXCHANGE = {AAPL:'NASDAQ', BA:'NYSE', MSFT:'NASDAQ', NVDA:'NASDAQ', QQQ:'NASDAQ', SPY:'AMEX', TSLA:'NASDAQ'};
+function tvSymbol(ticker){
+  if(!ticker) return null;
+  const m=ticker.match(/\.[A-Z]+$/);
+  if(m){ const ex=TV_SUFFIX_EXCHANGE[m[0]]; return ex?ex+'-'+ticker.slice(0,-m[0].length):null; }
+  const ex=TV_BARE_EXCHANGE[ticker];
+  return ex?ex+'-'+ticker:null;
+}
+const TV_RATING_DIR = {'strong-buy':1,'buy':0.5,'neutral':0,'sell':-0.5,'strong-sell':-1};
+async function fetchOneTradingView(ticker){
+  const sym=tvSymbol(ticker);
+  if(!sym) throw new Error('symbole TradingView non mappé');
+  const url=TRADINGVIEW+'/symbols/'+sym+'/technicals/';
+  const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
+  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  let rating=null;
+  for(const titleEl of doc.querySelectorAll('[class*="speedometerTitle"]')){
+    if(titleEl.textContent.trim()!=='Summary') continue;
+    const sib=titleEl.nextElementSibling;
+    const cls=sib?[...sib.classList].find(c=>/^container-(strong-buy|strong-sell|buy|sell|neutral)-/.test(c)):null;
+    if(cls) rating=cls.match(/^container-(strong-buy|strong-sell|buy|sell|neutral)-/)[1];
+    break;
+  }
+  if(!rating) throw new Error('jauge Summary introuvable');
+  return { rating, dir:TV_RATING_DIR[rating]??0, ts:Date.now() };
+}
+async function fetchTradingView(entities, force, byNameMap=byName){
+  const fresh=12*3600*1000;
+  const todo=entities.filter(e=>force || !TV[e.name] || Date.now()-TV[e.name].ts>fresh).slice(0,15);
+  const pool=2;
+  for(let i=0;i<todo.length;i+=pool){
+    await Promise.all(todo.slice(i,i+pool).map(async e=>{
+      const t=byNameMap[e.name];
+      try{ TV[e.name]=await fetchOneTradingView(t?.[2]); }
+      catch(err){ /* garde l'ancien si présent — ticker non mappé ou source protégée */ }
+    }));
+  }
+  localStorage.setItem(K_TV,JSON.stringify(TV));
+}
+function tvView(name){
+  const t=TV[name];
+  if(!t || t.dir==null) return null;
+  return t;
+}
+
+/* ---------- StockAnalysis.com (consensus analystes + objectif de cours) ----------
+ * Couverture internationale (US via /stocks/, international via /quote/{bourse}/) —
+ * gratuit, sans CAPTCHA, sans paywall constaté au moment de l'implémentation. */
+const SA_SUFFIX_EXCHANGE = {'.PA':'epa', '.DE':'etr', '.HE':'hel'};
+function saPath(ticker){
+  if(!ticker) return null;
+  const m=ticker.match(/\.[A-Z]+$/);
+  if(m){ const ex=SA_SUFFIX_EXCHANGE[m[0]]; return ex?'/quote/'+ex+'/'+ticker.slice(0,-m[0].length)+'/':null; }
+  return '/stocks/'+ticker.toLowerCase()+'/';
+}
+const SA_LABEL_DIR = {'strong buy':1,'buy':0.6,'hold':0,'sell':-0.6,'strong sell':-1};
+async function fetchOneStockAnalysis(ticker){
+  const path=saPath(ticker);
+  if(!path) throw new Error('symbole StockAnalysis non mappé');
+  const url=STOCKANALYSIS+path;
+  const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
+  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  let label=null;
+  for(const el of doc.querySelectorAll('div')){
+    if(el.textContent.trim().startsWith('Analyst Consensus:')){
+      label=el.querySelector('span')?.textContent.trim().toLowerCase()||null;
+      break;
+    }
+  }
+  if(!label || !(label in SA_LABEL_DIR)) throw new Error('consensus indisponible (probablement un ETF)');
+  let target=null;
+  for(const el of doc.querySelectorAll('div')){
+    if(el.textContent.trim()==='Price Target'){
+      const val=el.nextElementSibling?.textContent.replace(/[^\d,.-]/g,'').replace(',','.');
+      target=val?parseFloat(val)||null:null;
+      break;
+    }
+  }
+  return { label, dir:SA_LABEL_DIR[label], target, ts:Date.now() };
+}
+async function fetchStockAnalysis(entities, force, byNameMap=byName){
+  const fresh=24*3600*1000;
+  const todo=entities.filter(e=>force || !SA[e.name] || Date.now()-SA[e.name].ts>fresh).slice(0,15);
+  const pool=2;
+  for(let i=0;i<todo.length;i+=pool){
+    await Promise.all(todo.slice(i,i+pool).map(async e=>{
+      const t=byNameMap[e.name];
+      try{ SA[e.name]=await fetchOneStockAnalysis(t?.[2]); }
+      catch(err){ /* garde l'ancien si présent — pas de couverture (ETF) ou ticker non mappé */ }
+    }));
+  }
+  localStorage.setItem(K_SA,JSON.stringify(SA));
+}
+function saView(name){
+  const s=SA[name];
+  if(!s || s.dir==null) return null;
+  return s;
+}
+
 /* ---------- Presse mondiale (Google News RSS, confirmation, pas point de départ) ---------- */
-async function fetchGoogleNews(entities, force){
+async function fetchGoogleNews(entities, force, querySuffix='action bourse'){
   const fresh=12*3600*1000;
   const todo=entities.filter(e=>force || !GN[e.name] || Date.now()-GN[e.name].ts>fresh).slice(0,15);
   const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
   const pool=3;
   for(let i=0;i<todo.length;i+=pool){
     await Promise.all(todo.slice(i,i+pool).map(async e=>{
-      const q=encodeURIComponent(e.name+' action bourse');
+      const q=encodeURIComponent(e.name+' '+querySuffix);
       const url=GNEWS+q;
       try{
         let xml; try{ xml=await get(url); }catch(_){ xml=await get(PROXY+encodeURIComponent(url)); }
@@ -316,14 +519,32 @@ function techScore(q){
 }
 
 /* ================= Sentiment ================= */
-function sentiment(t){ t=' '+t.toLowerCase()+' '; let s=0; for(const w of POS) if(t.includes(w)) s++; for(const w of NEG) if(t.includes(w)) s--; return s; }
+// Inverse le signe d'un mot du lexique si une négation ("ne...pas", "sans", "aucun"…)
+// apparaît juste avant lui dans la même phrase (coupe à la ponctuation forte précédente).
+function isNegatedBefore(blob,idx){
+  const start=Math.max(0,idx-40);
+  const w=blob.slice(start,idx);
+  const cut=Math.max(w.lastIndexOf('.'),w.lastIndexOf('!'),w.lastIndexOf('?'),w.lastIndexOf(';'));
+  const win=cut>=0?w.slice(cut+1):w;
+  return /\b(ne|n['’]|sans|aucun|aucune|jamais|ni)\b/.test(win);
+}
+function sentiment(t){
+  const blob=' '+t.toLowerCase()+' ';
+  let s=0;
+  for(const w of POS){ const idx=blob.indexOf(w); if(idx!==-1) s+=isNegatedBefore(blob,idx)?-1:1; }
+  for(const w of NEG){ const idx=blob.indexOf(w); if(idx!==-1) s+=isNegatedBefore(blob,idx)?1:-1; }
+  return s;
+}
 
-function analyseEntities(){
+// includeAll : inclut toutes les valeurs de la liste même sans citation presse
+// (nécessaire pour les ETF, rarement cités individuellement par Le Revenu).
+function analyseEntities(list=ENTITIES, includeAll=false){
   const map=new Map();
+  if(includeAll) for(const [name] of list) map.set(name,{name,news:0,mentions:0,arts:[]});
   for(const it of ITEMS){
     const blob=(it.title+' '+it.desc).toLowerCase();
     const s=sentiment(it.title+' '+it.desc);
-    for(const [name,aliases] of ENTITIES){
+    for(const [name,aliases] of list){
       if(aliases.some(a=>blob.includes(a))){
         if(!map.has(name)) map.set(name,{name,news:0,mentions:0,arts:[]});
         const e=map.get(name); e.news+=s; e.mentions++; e.arts.push({title:it.title,link:it.link,s});
@@ -334,20 +555,29 @@ function analyseEntities(){
 }
 
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
-/* Croise les 4 signaux (ancre = Le Revenu) → direction normalisée [-1,1] chacun,
+/* Croise les 5 signaux (ancre = Le Revenu) → direction normalisée [-1,1] chacun,
  * composite pondéré (sur les seuls signaux disponibles) + concordance. */
 function computeVerdict(e){
   const sig=[];
   // Le Revenu (point de départ) — poids fort
-  sig.push({k:'lr', w:0.32, dir:clamp(e.news/2,-1,1), has:true});
-  // Technique
-  sig.push({k:'tech', w:0.30, dir:e.tech==null?0:clamp(e.tech/4,-1,1), has:e.tech!=null});
+  sig.push({k:'lr', w:0.22, dir:clamp(e.news/2,-1,1), has:true});
+  // Technique (interne : SMA/RSI/MACD/momentum)
+  sig.push({k:'tech', w:0.20, dir:e.tech==null?0:clamp(e.tech/4,-1,1), has:e.tech!=null});
+  // Jauge technique TradingView — même famille que "tech", poids volontairement réduit
+  const tv=tvView(e.name);
+  sig.push({k:'tv', w:0.08, dir:tv?tv.dir:0, has:!!tv});
+  // Consensus Zonebourse (France, ≥5 analystes)
+  const zv=zbView(e.name);
+  sig.push({k:'zb', w:0.12, dir:zv?zv.dir:0, has:!!zv});
   // Consensus analystes mondial (≥5)
   const cv=consView(e.ticker);
-  sig.push({k:'cons', w:0.26, dir:cv?clamp((3-cv.mean)/1.5,-1,1):0, has:!!cv});
+  sig.push({k:'cons', w:0.16, dir:cv?clamp((3-cv.mean)/1.5,-1,1):0, has:!!cv});
+  // Consensus + objectif StockAnalysis.com (couverture internationale)
+  const sa=saView(e.name);
+  sig.push({k:'sa', w:0.14, dir:sa?sa.dir:0, has:!!sa});
   // Google News (presse monde)
   const gv=gnView(e.name);
-  sig.push({k:'gn', w:0.12, dir:gv?clamp(gv.score/3,-1,1):0, has:!!gv});
+  sig.push({k:'gn', w:0.08, dir:gv?clamp(gv.score/3,-1,1):0, has:!!gv});
 
   const avail=sig.filter(s=>s.has);
   const wsum=avail.reduce((a,s)=>a+s.w,0)||1;
@@ -363,7 +593,7 @@ function computeVerdict(e){
   else if(composite>-0.05){lab='Conserver';cls='b-gray';}
   else if(composite>-0.4){lab='Alléger';cls='b-amber';}
   else{lab='VENDRE';cls='b-red';}
-  return {lab,cls,composite,nSig:avail.length,bull,bear,cv,gv};
+  return {lab,cls,composite,nSig:avail.length,bull,bear,cv,gv,zv,tv,sa};
 }
 
 /* Lien Boursorama : page cours (où l'utilisateur connecté passe l'ordre). */
@@ -378,56 +608,72 @@ const LEGEND_HTML = `<div class="legend-body">
      <span class="tag b-green">ACHETER</span> <span class="tag b-green">Renforcer</span>
      <span class="tag b-amber">Accumuler</span> <span class="tag b-gray">Conserver</span>
      <span class="tag b-amber">Alléger</span> <span class="tag b-red">VENDRE</span>.</p>
-  <p><b>4 sources croisées</b> (🟢 positif · ⚪ neutre · 🔴 négatif), pondérées :</p>
+  <p><b>7 sources croisées</b> (🟢 positif · ⚪ neutre · 🔴 négatif), pondérées :</p>
   <ul>
-    <li>📰 <b>Le Revenu</b> 32 % — point de départ (valeurs citées + ton des articles)</li>
-    <li>📈 <b>Technique</b> 30 % — SMA 20/50/200, RSI 14, MACD, momentum</li>
-    <li>🌐 <b>Consensus mondial</b> 26 % — analystes (retenu si ≥ ${MIN_ANALYSTS})</li>
-    <li>🔎 <b>Google News</b> 12 % — sentiment presse monde</li>
+    <li>📰 <b>Le Revenu</b> 22 % — point de départ (valeurs citées + ton des articles)</li>
+    <li>📈 <b>Technique</b> 20 % — calculé en interne : SMA 20/50/200, RSI 14, MACD, momentum</li>
+    <li>🕯️ <b>TradingView</b> 8 % — jauge technique de leur site (recoupe le signal Technique, pas une source vraiment indépendante)</li>
+    <li>🇫🇷 <b>Consensus Zonebourse</b> 12 % — analystes France (retenu si ≥ ${MIN_ANALYSTS})</li>
+    <li>🌐 <b>Consensus mondial (Yahoo)</b> 16 % — analystes (retenu si ≥ ${MIN_ANALYSTS})</li>
+    <li>📊 <b>StockAnalysis.com</b> 14 % — consensus analystes + objectif, couverture internationale</li>
+    <li>🔎 <b>Google News</b> 8 % — sentiment presse monde</li>
   </ul>
-  <p><span class="conc ok">✅ concordants</span> = les sources s'alignent (confiance élevée).
+  <p><span class="conc ok">✅ concordants</span> = les sources s'accordent au même instant (≥3/7 disponibles alignées).
+     <span class="conc mid">⚠️ x/7 sources</span> = moins de 3 sources disponibles pour cette valeur, verdict moins robuste.
      🎯 <b>Objectif</b> = cours cible + <b>potentiel</b> vs cours actuel.
      💰 <b>Boursorama</b> = ouvre la fiche pour passer l'ordre (exécution manuelle).</p>
+  <p style="color:#9fb0d4">⚠️ La concordance mesure un accord entre sources à l'instant T, pas une performance réelle.
+     Le taux de réussite <b>mesuré</b> sur l'historique des recos passées est visible dans l'onglet <b style="color:#c5d1ec">Historique</b>.
+     Zonebourse, TradingView et StockAnalysis.com sont des sites tiers scrapés côté client : leur disponibilité n'est pas garantie
+     (blocage anti-robot possible), l'app dégrade proprement sur les sources restantes le cas échéant.</p>
 </div>`;
 
-/* ================= Rendu : Signaux ================= */
-function renderRecos(){
-  const el=$('#tab-recos');
-  const ents=analyseEntities();
+/* ================= Rendu : Action / ETF ================= */
+// Moteur commun aux deux onglets valeurs (mêmes 7 sources, même verdict).
+// includeAll=true (ETF) : affiche toute la liste même sans citation presse
+// (les ETF sont rarement cités individuellement par Le Revenu).
+function renderAssetTab(tabId, list, byNameMap, includeAll){
+  const el=$('#'+tabId);
+  const ents=analyseEntities(list, includeAll);
   if(!ents.length){ el.innerHTML='<div class="empty">Aucune valeur identifiée dans l\'édition en cours.<br>Tire ⟳ pour actualiser.</div>'; return; }
   const scored = ents.map(e=>{
-    const t=byName[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
+    const t=byNameMap[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
     const o={...e, ticker:t?.[2], q, tech:ts}; o.v=computeVerdict(o); return o;
   }).sort((a,b)=>b.v.composite-a.v.composite);
 
   const dot=d=>d==null?'⚪':d>0.15?'🟢':d<-0.15?'🔴':'⚪';
   let h=`<div class="rc-head">
-    <div class="rc-count">🎯 ${scored.length} valeurs · 4 sources</div>
-    <button id="legend-btn" class="legend-btn" aria-label="Légende">ⓘ Légende</button>
+    <div class="rc-count">🎯 ${scored.length} valeurs · 7 sources</div>
+    <button id="legend-btn-${tabId}" class="legend-btn" aria-label="Légende">ⓘ Légende</button>
   </div>
-  <div id="legend" class="legend" hidden>${LEGEND_HTML}</div>`;
+  <div id="legend-${tabId}" class="legend" hidden>${LEGEND_HTML}</div>`;
 
   for(const e of scored){
-    const v=e.v, best=e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0], q=e.q;
+    const v=e.v, best=e.arts.length?e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0]:null, q=e.q;
     const lrDir=clamp(e.news/2,-1,1), techDir=e.tech==null?null:e.tech/4,
-          consDir=v.cv?(3-v.cv.mean)/1.5:null, gDir=v.gv?v.gv.score/3:null;
-    // pastilles 4 sources : tap → bulle légende (data-tip) + survol (title)
+          tvDir=v.tv?v.tv.dir:null, zbDir=v.zv?v.zv.dir:null, consDir=v.cv?(3-v.cv.mean)/1.5:null,
+          saDir=v.sa?v.sa.dir:null, gDir=v.gv?v.gv.score/3:null;
+    // pastilles 7 sources : tap → bulle légende (data-tip) + survol (title)
     const dotSpan=(icon,dir,tip)=>{
       const d=dir==null?'⚫':dot(dir);
       return `<span class="dotitem" data-tip="${esc(tip)}" title="${esc(tip)}">${icon}${d}</span>`;
     };
     const dots=`<div class="rc-dots">
-      ${dotSpan('📰',lrDir,`Le Revenu (presse) — 32 % du score. ${lrDir>0.15?'🟢 Positif':lrDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. C'est le point de départ : valeurs citées + ton des articles.`)}
-      ${dotSpan('📈',techDir,`Analyse technique — 30 %. ${techDir==null?'⚫ Cours indisponible':techDir>0.15?'🟢 Haussière':techDir<-0.15?'🔴 Baissière':'⚪ Neutre'}. SMA 20/50/200, RSI 14, MACD, momentum 3M.`)}
-      ${dotSpan('🌐',consDir,`Consensus analystes mondial — 26 %. ${v.cv?(v.cv.dir>0?'🟢':v.cv.dir<0?'🔴':'⚪')+' '+v.cv.label+' · '+v.cv.n+' analystes'+(v.cv.target?' · objectif moyen '+fmt(v.cv.target)+' €':''):'⚫ Indispo (< '+MIN_ANALYSTS+' analystes ou hors ligne / PWA)'}.`)}
-      ${dotSpan('🔎',gDir,`Google News (presse monde) — 12 %. ${gDir==null?'⚫ Indispo':gDir>0.15?'🟢 Positif':gDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. Sentiment agrégé de la presse mondiale.`)}
+      ${dotSpan('📰',lrDir,`Le Revenu (presse) — 22 % du score. ${lrDir>0.15?'🟢 Positif':lrDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. C'est le point de départ : valeurs citées + ton des articles.`)}
+      ${dotSpan('📈',techDir,`Analyse technique (interne) — 20 %. ${techDir==null?'⚫ Cours indisponible':techDir>0.15?'🟢 Haussière':techDir<-0.15?'🔴 Baissière':'⚪ Neutre'}. SMA 20/50/200, RSI 14, MACD, momentum 3M.`)}
+      ${dotSpan('🕯️',tvDir,`Jauge technique TradingView — 8 % du score (recoupe le signal Technique, pas indépendant). ${v.tv?(v.tv.dir>0?'🟢':v.tv.dir<0?'🔴':'⚪')+' '+v.tv.rating:'⚫ Indispo (ticker non mappé ou source protégée)'}.`)}
+      ${dotSpan('🇫🇷',zbDir,`Consensus Zonebourse (France) — 12 % du score. ${v.zv?(v.zv.dir>0?'🟢':v.zv.dir<0?'🔴':'⚪')+' '+(v.zv.label||'')+' · '+v.zv.n+' analystes'+(v.zv.target?' · objectif moyen '+fmt(v.zv.target)+' €':''):'⚫ Indispo (< '+MIN_ANALYSTS+' analystes ou source protégée)'}.`)}
+      ${dotSpan('🌐',consDir,`Consensus analystes mondial (Yahoo) — 16 % du score. ${v.cv?(v.cv.dir>0?'🟢':v.cv.dir<0?'🔴':'⚪')+' '+v.cv.label+' · '+v.cv.n+' analystes'+(v.cv.target?' · objectif moyen '+fmt(v.cv.target)+' €':''):'⚫ Indispo (< '+MIN_ANALYSTS+' analystes ou hors ligne / PWA)'}.`)}
+      ${dotSpan('📊',saDir,`Consensus StockAnalysis.com — 14 % du score. ${v.sa?(v.sa.dir>0?'🟢':v.sa.dir<0?'🔴':'⚪')+' '+v.sa.label+(v.sa.target?' · objectif '+fmt(v.sa.target)+' €':''):'⚫ Indispo (souvent le cas pour les ETF)'}.`)}
+      ${dotSpan('🔎',gDir,`Google News (presse monde) — 8 % du score. ${gDir==null?'⚫ Indispo':gDir>0.15?'🟢 Positif':gDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. Sentiment agrégé de la presse mondiale.`)}
     </div>`;
     // concordance
-    const conc = v.nSig>=2 ? (v.bull>=v.nSig && v.bull>=3 ? `<span class="conc ok" title="Toutes les sources s'alignent">✅ ${v.bull}/${v.nSig}</span>`
-      : v.bear>=v.nSig && v.bear>=3 ? `<span class="conc ko">⛔ ${v.bear}/${v.nSig}</span>`
+    const conc = v.nSig>=3 ? (v.bull>=v.nSig ? `<span class="conc ok" title="Toutes les sources s'alignent">✅ ${v.bull}/${v.nSig}</span>`
+      : v.bear>=v.nSig ? `<span class="conc ko">⛔ ${v.bear}/${v.nSig}</span>`
       : v.bull>v.bear ? `<span class="conc mid">↗︎ ${v.bull}/${v.nSig}</span>`
       : v.bear>v.bull ? `<span class="conc mid">↘︎ ${v.bear}/${v.nSig}</span>`
-      : `<span class="conc mid">↔︎ partagé</span>`) : '';
+      : `<span class="conc mid">↔︎ partagé</span>`)
+      : `<span class="conc mid" title="Peu de sources disponibles pour cette valeur — verdict moins robuste">⚠️ ${v.nSig}/7 sources</span>`;
     // ligne cours
     const priceStr = q?.price!=null ? `<b>${fmt(q.price)} €</b>` : '<span class="muted">cours n/d</span>';
     // objectifs (LR + consensus) en lignes clé-valeur
@@ -435,8 +681,12 @@ function renderRecos(){
     const tg=TARGETS[e.name]?.target;
     if(tg){ const p=q?.price?(tg/q.price-1)*100:null;
       kv+=`<div class="kv"><span>🎯 Objectif Le Revenu</span><b>${fmt(tg)} €${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
+    if(v.zv){ const p=(q?.price&&v.zv.target)?(v.zv.target/q.price-1)*100:null;
+      kv+=`<div class="kv"><span>🇫🇷 Zonebourse (${v.zv.n})</span><b>${v.zv.label?esc(v.zv.label):'—'}${v.zv.target?` · ${fmt(v.zv.target)} €`:''}${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
     if(v.cv){ const p=(q?.price&&v.cv.target)?(v.cv.target/q.price-1)*100:null;
       kv+=`<div class="kv"><span>🌐 Consensus (${v.cv.n})</span><b>${esc(v.cv.label)}${v.cv.target?` · ${fmt(v.cv.target)} €`:''}${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
+    if(v.sa){ const p=(q?.price&&v.sa.target)?(v.sa.target/q.price-1)*100:null;
+      kv+=`<div class="kv"><span>📊 StockAnalysis</span><b>${esc(v.sa.label)}${v.sa.target?` · ${fmt(v.sa.target)} €`:''}${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
     // indicateurs techniques compacts
     let tech='';
     if(q){
@@ -461,23 +711,25 @@ function renderRecos(){
       ${tech}
       <div class="rc-actions">
         <a class="btn-buy" href="${esc(bUrl)}" target="_blank" rel="noopener">${buyLab}</a>
-        ${best.link?`<a class="btn-src" href="${esc(best.link)}" target="_blank" rel="noopener" title="${esc(best.title)}">📰 Article</a>`:''}
+        ${best?.link?`<a class="btn-src" href="${esc(best.link)}" target="_blank" rel="noopener" title="${esc(best.title)}">📰 Article</a>`:''}
       </div>
     </div>`;
   }
   el.innerHTML=h;
-  const lb=el.querySelector('#legend'), bt=el.querySelector('#legend-btn');
+  const lb=el.querySelector('#legend-'+tabId), bt=el.querySelector('#legend-btn-'+tabId);
   bt.onclick=()=>{ lb.hidden=!lb.hidden; bt.classList.toggle('open',!lb.hidden); };
 }
+function renderRecos(){ renderAssetTab('tab-recos', ENTITIES, byName, false); }
+function renderEtf(){ renderAssetTab('tab-etf', ETFS, byNameETF, true); }
 
 /* ================= Historique des recos ================= */
 // Enregistre un point à chaque CHANGEMENT de verdict pour une valeur (date, reco, cours).
-function recordHistory(){
-  const ents=analyseEntities();
+function recordHistory(list=ENTITIES, byNameMap=byName, includeAll=false){
+  const ents=analyseEntities(list, includeAll);
   const today=new Date().toISOString().slice(0,10);
   let changed=false;
   for(const e of ents){
-    const t=byName[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
+    const t=byNameMap[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
     const v=computeVerdict({...e, ticker:t?.[2], q, tech:ts});
     let last=null; for(let i=HIST.length-1;i>=0;i--){ if(HIST[i].name===e.name){ last=HIST[i]; break; } }
     if(!last || last.lab!==v.lab){
@@ -491,15 +743,39 @@ function recordHistory(){
   if(changed) localStorage.setItem(K_HIST,JSON.stringify(HIST));
 }
 
+// Fiabilité mesurée sur l'historique réel (≠ concordance des sources, qui n'est qu'un
+// accord entre estimations au même instant t). Bull = ACHETER/Renforcer/Accumuler,
+// jugé correct si le cours a progressé depuis le changement de reco ; Bear = Alléger/
+// VENDRE, jugé correct si le cours a baissé. « Conserver » n'a pas de sens directionnel
+// clair et n'est pas noté.
+function computeReliability(){
+  const bullLabels=new Set(['ACHETER','Renforcer','Accumuler']);
+  const bearLabels=new Set(['Alléger','VENDRE']);
+  const bull={n:0,ok:0}, bear={n:0,ok:0};
+  for(const e of HIST){
+    if(e.price==null) continue;
+    const cur=e.ticker?QUOTES[e.ticker]?.price:null;
+    if(cur==null) continue;
+    const up=cur>e.price;
+    if(bullLabels.has(e.lab)){ bull.n++; if(up) bull.ok++; }
+    else if(bearLabels.has(e.lab)){ bear.n++; if(!up) bear.ok++; }
+  }
+  return {bull, bear, total:{n:bull.n+bear.n, ok:bull.ok+bear.ok}};
+}
 function renderHistory(){
   const el=$('#tab-hist');
   if(!HIST.length){ el.innerHTML='<div class="empty">Aucun historique pour l\'instant.<br>Chaque changement de reco s\'enregistre au fil des actualisations.</div>'; return; }
+  const rel=computeReliability(), pct=b=>b.n?Math.round(100*b.ok/b.n):null;
+  const relHtml = rel.total.n>=5
+    ? `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 <b style="color:#c5d1ec">Fiabilité mesurée</b> (performance réelle du cours depuis chaque changement de reco — pas une estimation) : <b style="color:#c5d1ec">${pct(rel.total)}%</b> (${rel.total.ok}/${rel.total.n})${rel.bull.n?` · Achat ${pct(rel.bull)}% (${rel.bull.ok}/${rel.bull.n})`:''}${rel.bear.n?` · Vente ${pct(rel.bear)}% (${rel.bear.ok}/${rel.bear.n})`:''}</div>`
+    : `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 Fiabilité mesurée : pas encore assez de données (minimum 5 changements de reco avec cours connu).</div>`;
   let h=`<div class="rc-head"><div class="rc-count">📜 ${HIST.length} changements</div>
     <button id="hist-clear" class="legend-btn">🗑 Vider</button></div>
+    ${relHtml}
     <div class="card" style="font-size:12px;color:var(--mut);margin-bottom:12px">Un point est ajouté quand le verdict d'une valeur change. « Depuis » = évolution du cours depuis ce changement.</div>`;
   for(let i=HIST.length-1;i>=0;i--){
     const e=HIST[i];
-    const t=byName[e.name], q=t?QUOTES[t[2]]:null, cur=q?.price;
+    const cur=e.ticker?QUOTES[e.ticker]?.price:null;
     let perf=''; if(e.price&&cur){ const p=(cur/e.price-1)*100; perf=` · depuis <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`; }
     const d=new Date(e.ts).toLocaleDateString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
     h+=`<div class="hist">
@@ -597,7 +873,7 @@ function editPosition(idx){
   const name = prompt('Valeur (nom exact, ex. '+names.slice(0,4).join(', ')+'…) :', p.name);
   if(name==null) return;
   const ent = byName[name] || ENTITIES.find(e=>e[0].toLowerCase()===name.trim().toLowerCase());
-  if(!ent){ alert('Valeur inconnue. Utilise un nom de la liste des Signaux (ex. Sodexo, Thales, LVMH…).'); return; }
+  if(!ent){ alert('Valeur inconnue. Utilise un nom de la liste Action (ex. Sodexo, Thales, LVMH…).'); return; }
   const qty=parseFloat(prompt('Quantité :',p.qty||'')||'0');
   const buy=parseFloat(prompt('Prix de revient unitaire (PRU) € :',p.buy||'')||'0');
   const sl=prompt('Stop-loss % (perte max, vide=off) :',p.sl||'');
@@ -639,7 +915,7 @@ function renderAlloc(){
   const bars=a.rows.map(([lab,pct,col])=>`<div class="alloc-row"><div class="alloc-lab">${esc(lab)}</div><div class="alloc-bar"><div class="alloc-fill" style="width:${pct}%;background:${col}"></div></div><div class="alloc-pct">${pct}%</div></div>`).join('');
   el.innerHTML=`<div class="profiles">${chips}</div>
     <div class="card"><div class="sec-h">📊 Allocation cible · ${esc(a.label)}</div>${bars}<div class="alloc-note">${esc(a.note)}</div></div>
-    <div class="card" style="font-size:12.5px;color:var(--mut)">💡 Répartition indicative. Ajuste selon horizon, fiscalité (PEA, assurance-vie) et capacité d'épargne. Croise avec <b style="color:#c5d1ec">Signaux</b> (choix des valeurs) et <b style="color:#c5d1ec">Portefeuille</b> (règles de revente).</div>`;
+    <div class="card" style="font-size:12.5px;color:var(--mut)">💡 Répartition indicative. Ajuste selon horizon, fiscalité (PEA, assurance-vie) et capacité d'épargne. Croise avec <b style="color:#c5d1ec">Action</b> / <b style="color:#c5d1ec">ETF</b> (choix des valeurs) et <b style="color:#c5d1ec">Portefeuille</b> (règles de revente).</div>`;
   el.querySelectorAll('[data-prof]').forEach(b=>b.onclick=()=>{ curProfile=b.dataset.prof; renderAlloc(); });
 }
 
@@ -662,16 +938,35 @@ function renderMag(){
       <a href="https://www.lerevenu.com/immobilier" target="_blank" rel="noopener">Immobilier <span>▸</span></a>
       <a href="https://www.lerevenu.com/impots" target="_blank" rel="noopener">Impôts & fiscalité <span>▸</span></a>
     </div>
-    <div class="card" style="font-size:12.5px;color:var(--mut)">Signaux et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu.</div>`;
+    <div class="card" style="font-size:12.5px;color:var(--mut)">Action, ETF et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu.</div>`;
   el.querySelector('#mag-open').onclick=()=>openMag(CAFEYN,'Le Revenu');
 }
 
 /* ================= Navigation / chargement ================= */
+/* Rendu différé : coalesce les rendus successifs de load() en un seul, et ne
+ * remplace jamais le DOM pendant un scroll/geste tactile en cours (sinon
+ * innerHTML= coupe le scroll en plein vol sur WebView mobile). */
+let scrolling=false, scrollEndTimer=null, renderTimer=null, renderPending=false;
+function markScrollActivity(){
+  scrolling=true;
+  clearTimeout(scrollEndTimer);
+  scrollEndTimer=setTimeout(()=>{ scrolling=false; if(renderPending){ renderPending=false; renderAll(); } }, 200);
+}
+document.addEventListener('touchstart', markScrollActivity, {passive:true, capture:true});
+document.addEventListener('touchmove', markScrollActivity, {passive:true, capture:true});
+document.addEventListener('scroll', markScrollActivity, {passive:true, capture:true});
+function scheduleRenderAll(){
+  clearTimeout(renderTimer);
+  renderTimer=setTimeout(()=>{
+    if(scrolling){ renderPending=true; return; }
+    renderAll();
+  }, 300);
+}
 function showTab(name){
   document.querySelectorAll('#tabs .chip').forEach(c=>c.classList.toggle('active',c.dataset.tab===name));
   document.querySelectorAll('.tab').forEach(t=>t.hidden=t.id!=='tab-'+name);
 }
-function renderAll(){ renderRecos(); renderThemes(); renderPortfolio(); renderHistory(); renderAlloc(); renderMag(); }
+function renderAll(){ renderRecos(); renderEtf(); renderThemes(); renderPortfolio(); renderHistory(); renderAlloc(); renderMag(); }
 
 async function load(force){
   const st=$('#status'), btn=$('#refresh'); btn.classList.add('spin');
@@ -681,29 +976,46 @@ async function load(force){
     st.textContent='Analyse de l\'édition Le Revenu…';
     ITEMS = await fetchRss();
     localStorage.setItem(K_ITEMS,JSON.stringify({ts:Date.now(),items:ITEMS}));
-    renderRecos(); renderThemes();
-    // tickers = valeurs citées + positions
-    const ents  = analyseEntities();
+    scheduleRenderAll();
+    // tickers = valeurs + ETF (toujours suivis) + positions
+    const ents    = analyseEntities();
+    const etfEnts = analyseEntities(ETFS, true);
     const cited = ents.map(e=>byName[e.name]?.[2]).filter(Boolean);
+    const etfTk = ETFS.map(e=>e[2]);
     const held  = PORT.map(p=>p.ticker).filter(Boolean);
     st.textContent='Cours & indicateurs techniques…';
-    await loadQuotes([...new Set([...cited,...held])], force);
-    renderAll();
+    await loadQuotes([...new Set([...cited,...etfTk,...held])], force);
+    scheduleRenderAll();
     st.textContent='Objectifs de cours (Le Revenu)…';
     await fetchTargets(ents, force);
-    renderAll();
+    await fetchTargets(etfEnts, force);
+    scheduleRenderAll();
     st.textContent='Consensus analystes mondial…';
-    await fetchConsensus([...new Set([...cited,...held])], force);
-    renderAll();
+    await fetchConsensus([...new Set([...cited,...etfTk,...held])], force);
+    scheduleRenderAll();
+    st.textContent='Consensus Zonebourse (France)…';
+    await fetchZonebourse(ents, force);
+    await fetchZonebourse(etfEnts, force, byNameETF);
+    scheduleRenderAll();
+    st.textContent='Jauge technique TradingView…';
+    await fetchTradingView(ents, force);
+    await fetchTradingView(etfEnts, force, byNameETF);
+    scheduleRenderAll();
+    st.textContent='Consensus StockAnalysis.com…';
+    await fetchStockAnalysis(ents, force);
+    await fetchStockAnalysis(etfEnts, force, byNameETF);
+    scheduleRenderAll();
     st.textContent='Presse mondiale (Google News)…';
     await fetchGoogleNews(ents, force);
-    recordHistory();   // enregistre les changements de reco (après toutes les sources)
-    renderAll();
-    st.textContent=ITEMS.length+' articles · 4 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+    await fetchGoogleNews(etfEnts, force, 'ETF');
+    recordHistory();                          // valeurs
+    recordHistory(ETFS, byNameETF, true);     // ETF
+    scheduleRenderAll();
+    st.textContent=ITEMS.length+' articles · 7 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   }catch(e){
     if(!ITEMS.length) st.textContent='⚠️ Hors-ligne et aucun cache.';
     else st.textContent='⚠️ Actualisation partielle — cache affiché.';
-    renderAll();
+    scheduleRenderAll();
   }finally{ btn.classList.remove('spin'); }
 }
 
