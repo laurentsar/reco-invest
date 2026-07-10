@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.07';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.08';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
