@@ -25,8 +25,11 @@ const K_TARG  = 'recoInvest:targets';
 const K_CONS  = 'recoInvest:consensus';
 const K_GNEWS = 'recoInvest:gnews';
 const K_HIST  = 'recoInvest:history';
+const K_ZB    = 'recoInvest:zonebourse';
+const K_ZBID  = 'recoInvest:zbid';
 const MIN_ANALYSTS = 5;   // consensus retenu seulement si ≥ 5 analystes
 const GNEWS = 'https://news.google.com/rss/search?hl=fr&gl=FR&ceid=FR:fr&q=';
+const ZONEBOURSE = 'https://www.zonebourse.com';
 
 /* ---------- Lexique de sentiment (fr) ---------- */
 const POS = ['bondit','bondissent','rebond','rebondit','relève','relèvent','surperform','hausse',
@@ -107,6 +110,8 @@ let TARGETS = {};          // nom valeur → {target, link, ts}  (objectif de co
 let CONS = {};             // ticker → {key, mean, target, n, ts}  (consensus analystes mondial)
 let GN = {};               // nom valeur → {score, n, ts}  (sentiment presse mondiale Google News)
 let HIST = [];             // historique des changements de reco
+let ZB = {};                // nom valeur → {label, note, target, n, ts}  (consensus Zonebourse, France)
+let ZBID = {};               // nom valeur → id fiche Zonebourse (cache, évite une recherche à chaque rafraîchissement)
 
 try{ PORT = JSON.parse(localStorage.getItem(K_PORT)||'[]'); }catch(e){ PORT=[]; }
 try{ QUOTES = JSON.parse(localStorage.getItem(K_QUOTE)||'{}'); }catch(e){ QUOTES={}; }
@@ -114,6 +119,8 @@ try{ TARGETS = JSON.parse(localStorage.getItem(K_TARG)||'{}'); }catch(e){ TARGET
 try{ CONS = JSON.parse(localStorage.getItem(K_CONS)||'{}'); }catch(e){ CONS={}; }
 try{ GN = JSON.parse(localStorage.getItem(K_GNEWS)||'{}'); }catch(e){ GN={}; }
 try{ HIST = JSON.parse(localStorage.getItem(K_HIST)||'[]'); }catch(e){ HIST=[]; }
+try{ ZB = JSON.parse(localStorage.getItem(K_ZB)||'{}'); }catch(e){ ZB={}; }
+try{ ZBID = JSON.parse(localStorage.getItem(K_ZBID)||'{}'); }catch(e){ ZBID={}; }
 
 /* ================= Utils ================= */
 const $ = s=>document.querySelector(s);
@@ -279,6 +286,73 @@ function consView(ticker){
   return {...c, dir, label};
 }
 
+/* ---------- Consensus Zonebourse (France, groupe MarketScreener) ---------- */
+// Recherche la fiche de la valeur, puis lit le bloc #consensusDetail (jauge « Note X/10 »,
+// recommandation moyenne, objectif de cours moyen, nb d'analystes). Retenu si n ≥ MIN_ANALYSTS.
+async function zbResolveId(name, mnemo){
+  if(ZBID[name]) return ZBID[name];
+  const url=ZONEBOURSE+'/recherche/?q='+encodeURIComponent(name);
+  const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
+  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  let fallback=null, best=null;
+  for(const row of doc.querySelectorAll('tr')){
+    const a=row.querySelector('a[href^="/cours/action/"]');
+    if(!a) continue;
+    const href=a.getAttribute('href');
+    if(/\/(actualite|societe)\//.test(href)) continue;
+    if(!fallback) fallback=href;
+    const mn=row.querySelector('[aria-label="Mnemo"]')?.textContent.trim();
+    if(mnemo && mn && mn.toUpperCase()===mnemo.toUpperCase()){ best=href; break; }
+  }
+  const href=best||fallback;
+  if(!href) throw new Error('valeur introuvable sur Zonebourse');
+  const id=href.replace(/^\/|\/$/g,'');
+  ZBID[name]=id;
+  localStorage.setItem(K_ZBID,JSON.stringify(ZBID));
+  return id;
+}
+async function fetchOneZonebourse(name,mnemo){
+  const id=await zbResolveId(name,mnemo);
+  const url=ZONEBOURSE+'/'+id+'/';
+  const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
+  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  const box=doc.querySelector('#consensusDetail');
+  if(!box) throw new Error('bloc consensus indisponible');
+  const kv={};
+  box.querySelectorAll('.grid').forEach(row=>{
+    const cells=row.querySelectorAll(':scope > div');
+    if(cells.length>=2) kv[cells[0].textContent.trim()]=cells[1].textContent.trim();
+  });
+  const gaugeTitle=box.querySelector('.consensus-gauge')?.getAttribute('title')||'';
+  const m=gaugeTitle.match(/([\d.,]+)\s*\/\s*10/);
+  const note=m?parseFloat(m[1].replace(',','.')):null;
+  const n=parseInt((kv["Nombre d'Analystes"]||'').replace(/\D/g,''),10)||0;
+  const target=parseFloat((kv['Objectif de cours Moyen']||'').replace(/[^\d,.-]/g,'').replace(',','.'))||null;
+  return { label: kv['Recommandation moyenne']||null, note, n, target, ts:Date.now() };
+}
+async function fetchZonebourse(entities, force){
+  const fresh=24*3600*1000;
+  const todo=entities.filter(e=>force || !ZB[e.name] || Date.now()-ZB[e.name].ts>fresh).slice(0,15);
+  const pool=2;
+  for(let i=0;i<todo.length;i+=pool){
+    await Promise.all(todo.slice(i,i+pool).map(async e=>{
+      const t=byName[e.name], mnemo=t?.[2]?.replace(/\.[A-Z]+$/,'')||null;
+      try{ ZB[e.name]=await fetchOneZonebourse(e.name,mnemo); }
+      catch(err){ /* garde l'ancien si présent — source parfois protégée anti-bot */ }
+    }));
+  }
+  localStorage.setItem(K_ZB,JSON.stringify(ZB));
+}
+// Direction Zonebourse : jauge 0 (Vente) → 10 (Achat), normalisée en [-1,1]
+function zbView(name){
+  const z=ZB[name];
+  if(!z || (z.n||0)<MIN_ANALYSTS || z.note==null) return null;
+  const dir=clamp((z.note-5)/5,-1,1);
+  return {...z, dir};
+}
+
 /* ---------- Presse mondiale (Google News RSS, confirmation, pas point de départ) ---------- */
 async function fetchGoogleNews(entities, force){
   const fresh=12*3600*1000;
@@ -334,20 +408,23 @@ function analyseEntities(){
 }
 
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
-/* Croise les 4 signaux (ancre = Le Revenu) → direction normalisée [-1,1] chacun,
+/* Croise les 5 signaux (ancre = Le Revenu) → direction normalisée [-1,1] chacun,
  * composite pondéré (sur les seuls signaux disponibles) + concordance. */
 function computeVerdict(e){
   const sig=[];
   // Le Revenu (point de départ) — poids fort
-  sig.push({k:'lr', w:0.32, dir:clamp(e.news/2,-1,1), has:true});
+  sig.push({k:'lr', w:0.28, dir:clamp(e.news/2,-1,1), has:true});
   // Technique
-  sig.push({k:'tech', w:0.30, dir:e.tech==null?0:clamp(e.tech/4,-1,1), has:e.tech!=null});
+  sig.push({k:'tech', w:0.27, dir:e.tech==null?0:clamp(e.tech/4,-1,1), has:e.tech!=null});
+  // Consensus Zonebourse (France, ≥5 analystes)
+  const zv=zbView(e.name);
+  sig.push({k:'zb', w:0.15, dir:zv?zv.dir:0, has:!!zv});
   // Consensus analystes mondial (≥5)
   const cv=consView(e.ticker);
-  sig.push({k:'cons', w:0.26, dir:cv?clamp((3-cv.mean)/1.5,-1,1):0, has:!!cv});
+  sig.push({k:'cons', w:0.20, dir:cv?clamp((3-cv.mean)/1.5,-1,1):0, has:!!cv});
   // Google News (presse monde)
   const gv=gnView(e.name);
-  sig.push({k:'gn', w:0.12, dir:gv?clamp(gv.score/3,-1,1):0, has:!!gv});
+  sig.push({k:'gn', w:0.10, dir:gv?clamp(gv.score/3,-1,1):0, has:!!gv});
 
   const avail=sig.filter(s=>s.has);
   const wsum=avail.reduce((a,s)=>a+s.w,0)||1;
@@ -363,7 +440,7 @@ function computeVerdict(e){
   else if(composite>-0.05){lab='Conserver';cls='b-gray';}
   else if(composite>-0.4){lab='Alléger';cls='b-amber';}
   else{lab='VENDRE';cls='b-red';}
-  return {lab,cls,composite,nSig:avail.length,bull,bear,cv,gv};
+  return {lab,cls,composite,nSig:avail.length,bull,bear,cv,gv,zv};
 }
 
 /* Lien Boursorama : page cours (où l'utilisateur connecté passe l'ordre). */
@@ -378,12 +455,13 @@ const LEGEND_HTML = `<div class="legend-body">
      <span class="tag b-green">ACHETER</span> <span class="tag b-green">Renforcer</span>
      <span class="tag b-amber">Accumuler</span> <span class="tag b-gray">Conserver</span>
      <span class="tag b-amber">Alléger</span> <span class="tag b-red">VENDRE</span>.</p>
-  <p><b>4 sources croisées</b> (🟢 positif · ⚪ neutre · 🔴 négatif), pondérées :</p>
+  <p><b>5 sources croisées</b> (🟢 positif · ⚪ neutre · 🔴 négatif), pondérées :</p>
   <ul>
-    <li>📰 <b>Le Revenu</b> 32 % — point de départ (valeurs citées + ton des articles)</li>
-    <li>📈 <b>Technique</b> 30 % — SMA 20/50/200, RSI 14, MACD, momentum</li>
-    <li>🌐 <b>Consensus mondial</b> 26 % — analystes (retenu si ≥ ${MIN_ANALYSTS})</li>
-    <li>🔎 <b>Google News</b> 12 % — sentiment presse monde</li>
+    <li>📰 <b>Le Revenu</b> 28 % — point de départ (valeurs citées + ton des articles)</li>
+    <li>📈 <b>Technique</b> 27 % — SMA 20/50/200, RSI 14, MACD, momentum</li>
+    <li>🇫🇷 <b>Consensus Zonebourse</b> 15 % — analystes France (retenu si ≥ ${MIN_ANALYSTS})</li>
+    <li>🌐 <b>Consensus mondial</b> 20 % — analystes (retenu si ≥ ${MIN_ANALYSTS})</li>
+    <li>🔎 <b>Google News</b> 10 % — sentiment presse monde</li>
   </ul>
   <p><span class="conc ok">✅ concordants</span> = les sources s'alignent (confiance élevée).
      🎯 <b>Objectif</b> = cours cible + <b>potentiel</b> vs cours actuel.
@@ -402,7 +480,7 @@ function renderRecos(){
 
   const dot=d=>d==null?'⚪':d>0.15?'🟢':d<-0.15?'🔴':'⚪';
   let h=`<div class="rc-head">
-    <div class="rc-count">🎯 ${scored.length} valeurs · 4 sources</div>
+    <div class="rc-count">🎯 ${scored.length} valeurs · 5 sources</div>
     <button id="legend-btn" class="legend-btn" aria-label="Légende">ⓘ Légende</button>
   </div>
   <div id="legend" class="legend" hidden>${LEGEND_HTML}</div>`;
@@ -410,17 +488,18 @@ function renderRecos(){
   for(const e of scored){
     const v=e.v, best=e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0], q=e.q;
     const lrDir=clamp(e.news/2,-1,1), techDir=e.tech==null?null:e.tech/4,
-          consDir=v.cv?(3-v.cv.mean)/1.5:null, gDir=v.gv?v.gv.score/3:null;
-    // pastilles 4 sources : tap → bulle légende (data-tip) + survol (title)
+          zbDir=v.zv?v.zv.dir:null, consDir=v.cv?(3-v.cv.mean)/1.5:null, gDir=v.gv?v.gv.score/3:null;
+    // pastilles 5 sources : tap → bulle légende (data-tip) + survol (title)
     const dotSpan=(icon,dir,tip)=>{
       const d=dir==null?'⚫':dot(dir);
       return `<span class="dotitem" data-tip="${esc(tip)}" title="${esc(tip)}">${icon}${d}</span>`;
     };
     const dots=`<div class="rc-dots">
-      ${dotSpan('📰',lrDir,`Le Revenu (presse) — 32 % du score. ${lrDir>0.15?'🟢 Positif':lrDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. C'est le point de départ : valeurs citées + ton des articles.`)}
-      ${dotSpan('📈',techDir,`Analyse technique — 30 %. ${techDir==null?'⚫ Cours indisponible':techDir>0.15?'🟢 Haussière':techDir<-0.15?'🔴 Baissière':'⚪ Neutre'}. SMA 20/50/200, RSI 14, MACD, momentum 3M.`)}
-      ${dotSpan('🌐',consDir,`Consensus analystes mondial — 26 %. ${v.cv?(v.cv.dir>0?'🟢':v.cv.dir<0?'🔴':'⚪')+' '+v.cv.label+' · '+v.cv.n+' analystes'+(v.cv.target?' · objectif moyen '+fmt(v.cv.target)+' €':''):'⚫ Indispo (< '+MIN_ANALYSTS+' analystes ou hors ligne / PWA)'}.`)}
-      ${dotSpan('🔎',gDir,`Google News (presse monde) — 12 %. ${gDir==null?'⚫ Indispo':gDir>0.15?'🟢 Positif':gDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. Sentiment agrégé de la presse mondiale.`)}
+      ${dotSpan('📰',lrDir,`Le Revenu (presse) — 28 % du score. ${lrDir>0.15?'🟢 Positif':lrDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. C'est le point de départ : valeurs citées + ton des articles.`)}
+      ${dotSpan('📈',techDir,`Analyse technique — 27 %. ${techDir==null?'⚫ Cours indisponible':techDir>0.15?'🟢 Haussière':techDir<-0.15?'🔴 Baissière':'⚪ Neutre'}. SMA 20/50/200, RSI 14, MACD, momentum 3M.`)}
+      ${dotSpan('🇫🇷',zbDir,`Consensus Zonebourse (France) — 15 % du score. ${v.zv?(v.zv.dir>0?'🟢':v.zv.dir<0?'🔴':'⚪')+' '+(v.zv.label||'')+' · '+v.zv.n+' analystes'+(v.zv.target?' · objectif moyen '+fmt(v.zv.target)+' €':''):'⚫ Indispo (< '+MIN_ANALYSTS+' analystes ou source protégée)'}.`)}
+      ${dotSpan('🌐',consDir,`Consensus analystes mondial — 20 % du score. ${v.cv?(v.cv.dir>0?'🟢':v.cv.dir<0?'🔴':'⚪')+' '+v.cv.label+' · '+v.cv.n+' analystes'+(v.cv.target?' · objectif moyen '+fmt(v.cv.target)+' €':''):'⚫ Indispo (< '+MIN_ANALYSTS+' analystes ou hors ligne / PWA)'}.`)}
+      ${dotSpan('🔎',gDir,`Google News (presse monde) — 10 % du score. ${gDir==null?'⚫ Indispo':gDir>0.15?'🟢 Positif':gDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. Sentiment agrégé de la presse mondiale.`)}
     </div>`;
     // concordance
     const conc = v.nSig>=2 ? (v.bull>=v.nSig && v.bull>=3 ? `<span class="conc ok" title="Toutes les sources s'alignent">✅ ${v.bull}/${v.nSig}</span>`
@@ -435,6 +514,8 @@ function renderRecos(){
     const tg=TARGETS[e.name]?.target;
     if(tg){ const p=q?.price?(tg/q.price-1)*100:null;
       kv+=`<div class="kv"><span>🎯 Objectif Le Revenu</span><b>${fmt(tg)} €${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
+    if(v.zv){ const p=(q?.price&&v.zv.target)?(v.zv.target/q.price-1)*100:null;
+      kv+=`<div class="kv"><span>🇫🇷 Zonebourse (${v.zv.n})</span><b>${v.zv.label?esc(v.zv.label):'—'}${v.zv.target?` · ${fmt(v.zv.target)} €`:''}${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
     if(v.cv){ const p=(q?.price&&v.cv.target)?(v.cv.target/q.price-1)*100:null;
       kv+=`<div class="kv"><span>🌐 Consensus (${v.cv.n})</span><b>${esc(v.cv.label)}${v.cv.target?` · ${fmt(v.cv.target)} €`:''}${p!=null?` <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`:''}</b></div>`; }
     // indicateurs techniques compacts
@@ -714,11 +795,14 @@ async function load(force){
     st.textContent='Consensus analystes mondial…';
     await fetchConsensus([...new Set([...cited,...held])], force);
     scheduleRenderAll();
+    st.textContent='Consensus Zonebourse (France)…';
+    await fetchZonebourse(ents, force);
+    scheduleRenderAll();
     st.textContent='Presse mondiale (Google News)…';
     await fetchGoogleNews(ents, force);
     recordHistory();   // enregistre les changements de reco (après toutes les sources)
     scheduleRenderAll();
-    st.textContent=ITEMS.length+' articles · 4 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+    st.textContent=ITEMS.length+' articles · 5 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   }catch(e){
     if(!ITEMS.length) st.textContent='⚠️ Hors-ligne et aucun cache.';
     else st.textContent='⚠️ Actualisation partielle — cache affiché.';
