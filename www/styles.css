@@ -47,7 +47,7 @@ body{
 }
 .sec-h{font-size:13px; font-weight:800; color:var(--mut); text-transform:uppercase; letter-spacing:.6px; margin:2px 0 10px}
 
-/* ---- Signaux : en-tête + légende ---- */
+/* ---- Action : en-tête + légende ---- */
 .rc-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin:2px 0 12px}
 .rc-count{font-size:13px; font-weight:800; color:var(--mut); text-transform:uppercase; letter-spacing:.5px}
 .legend-btn{border:1px solid var(--line); background:var(--card); color:var(--blue); font-size:12.5px; font-weight:700; padding:6px 11px; border-radius:999px; cursor:pointer}
@@ -61,7 +61,7 @@ body{
 .legend-body b{color:#fff}
 .tag{display:inline-block; font-size:10px; font-weight:800; padding:2px 6px; border-radius:6px; margin:0 1px}
 
-/* ---- Signaux : carte valeur ---- */
+/* ---- Action : carte valeur ---- */
 .rc{background:var(--card); border:1px solid var(--line); border-left:4px solid var(--line); border-radius:14px; padding:13px 14px; margin-bottom:11px}
 .rc-b-green{border-left-color:var(--green)}
 .rc-b-amber{border-left-color:var(--amber)}

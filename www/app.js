@@ -390,7 +390,7 @@ const LEGEND_HTML = `<div class="legend-body">
      💰 <b>Boursorama</b> = ouvre la fiche pour passer l'ordre (exécution manuelle).</p>
 </div>`;
 
-/* ================= Rendu : Signaux ================= */
+/* ================= Rendu : Action ================= */
 function renderRecos(){
   const el=$('#tab-recos');
   const ents=analyseEntities();
@@ -597,7 +597,7 @@ function editPosition(idx){
   const name = prompt('Valeur (nom exact, ex. '+names.slice(0,4).join(', ')+'…) :', p.name);
   if(name==null) return;
   const ent = byName[name] || ENTITIES.find(e=>e[0].toLowerCase()===name.trim().toLowerCase());
-  if(!ent){ alert('Valeur inconnue. Utilise un nom de la liste des Signaux (ex. Sodexo, Thales, LVMH…).'); return; }
+  if(!ent){ alert('Valeur inconnue. Utilise un nom de la liste Action (ex. Sodexo, Thales, LVMH…).'); return; }
   const qty=parseFloat(prompt('Quantité :',p.qty||'')||'0');
   const buy=parseFloat(prompt('Prix de revient unitaire (PRU) € :',p.buy||'')||'0');
   const sl=prompt('Stop-loss % (perte max, vide=off) :',p.sl||'');
@@ -639,7 +639,7 @@ function renderAlloc(){
   const bars=a.rows.map(([lab,pct,col])=>`<div class="alloc-row"><div class="alloc-lab">${esc(lab)}</div><div class="alloc-bar"><div class="alloc-fill" style="width:${pct}%;background:${col}"></div></div><div class="alloc-pct">${pct}%</div></div>`).join('');
   el.innerHTML=`<div class="profiles">${chips}</div>
     <div class="card"><div class="sec-h">📊 Allocation cible · ${esc(a.label)}</div>${bars}<div class="alloc-note">${esc(a.note)}</div></div>
-    <div class="card" style="font-size:12.5px;color:var(--mut)">💡 Répartition indicative. Ajuste selon horizon, fiscalité (PEA, assurance-vie) et capacité d'épargne. Croise avec <b style="color:#c5d1ec">Signaux</b> (choix des valeurs) et <b style="color:#c5d1ec">Portefeuille</b> (règles de revente).</div>`;
+    <div class="card" style="font-size:12.5px;color:var(--mut)">💡 Répartition indicative. Ajuste selon horizon, fiscalité (PEA, assurance-vie) et capacité d'épargne. Croise avec <b style="color:#c5d1ec">Action</b> (choix des valeurs) et <b style="color:#c5d1ec">Portefeuille</b> (règles de revente).</div>`;
   el.querySelectorAll('[data-prof]').forEach(b=>b.onclick=()=>{ curProfile=b.dataset.prof; renderAlloc(); });
 }
 
@@ -662,7 +662,7 @@ function renderMag(){
       <a href="https://www.lerevenu.com/immobilier" target="_blank" rel="noopener">Immobilier <span>▸</span></a>
       <a href="https://www.lerevenu.com/impots" target="_blank" rel="noopener">Impôts & fiscalité <span>▸</span></a>
     </div>
-    <div class="card" style="font-size:12.5px;color:var(--mut)">Signaux et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu.</div>`;
+    <div class="card" style="font-size:12.5px;color:var(--mut)">Action et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu.</div>`;
   el.querySelector('#mag-open').onclick=()=>openMag(CAFEYN,'Le Revenu');
 }
 
