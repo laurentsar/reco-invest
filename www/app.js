@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.08';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.09';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -715,6 +715,7 @@ function renderAssetTab(tabId, list, byNameMap, includeAll){
       </div>
     </div>`;
   }
+  notifyBuyOpportunities(scored, tabId);
   el.innerHTML=h;
   const lb=el.querySelector('#legend-'+tabId), bt=el.querySelector('#legend-btn-'+tabId);
   bt.onclick=()=>{ lb.hidden=!lb.hidden; bt.classList.toggle('open',!lb.hidden); };
@@ -889,21 +890,39 @@ function editPosition(idx){
 }
 
 /* Notification (Capacitor si dispo, sinon Web Notifications, sinon rien) */
+function sendNotification(title, body){
+  try{
+    const LN=window.Capacitor?.Plugins?.LocalNotifications;
+    if(LN){ LN.schedule({notifications:[{id:Date.now()%100000,title,body}]}); return; }
+  }catch(e){}
+  try{
+    if('Notification' in window){
+      if(Notification.permission==='granted') new Notification(title,{body});
+      else if(Notification.permission!=='denied') Notification.requestPermission().then(pm=>{ if(pm==='granted') new Notification(title,{body}); });
+    }
+  }catch(e){}
+}
 let lastNotifKey='';
 function notify(alerts){
   const key = alerts.map(a=>a.action+a.name).join('|');
   if(key===lastNotifKey) return; lastNotifKey=key;
   const body = alerts.map(a=>(a.action==='SELL'?'Vendre ':'Alléger ')+a.name).join(', ');
-  try{
-    const LN=window.Capacitor?.Plugins?.LocalNotifications;
-    if(LN){ LN.schedule({notifications:[{id:Date.now()%100000,title:'Reco Invest — alerte revente',body}]}); return; }
-  }catch(e){}
-  try{
-    if('Notification' in window){
-      if(Notification.permission==='granted') new Notification('Reco Invest — alerte revente',{body});
-      else if(Notification.permission!=='denied') Notification.requestPermission().then(pm=>{ if(pm==='granted') new Notification('Reco Invest — alerte revente',{body}); });
-    }
-  }catch(e){}
+  sendNotification('Reco Invest — alerte revente', body);
+}
+
+/* Notification opportunité d'achat sous un seuil de prix (par défaut 20 €). */
+const BUY_PRICE_ALERT = 20;
+let lastBuyNotifKey={};
+function notifyBuyOpportunities(scored, tabId){
+  const opps = scored.filter(e=>{
+    const v=e.v;
+    return /green|amber/.test(v.cls) && v.composite>=0.05 && e.q?.price!=null && e.q.price<BUY_PRICE_ALERT;
+  });
+  const key = opps.map(e=>e.name+e.v.lab).sort().join('|');
+  if(key===(lastBuyNotifKey[tabId]||'')) return; lastBuyNotifKey[tabId]=key;
+  if(!opps.length) return;
+  const body = opps.slice(0,6).map(e=>`${e.name} ${fmt(e.q.price)} € (${e.v.lab})`).join(', ');
+  sendNotification('Reco Invest — opportunité < '+BUY_PRICE_ALERT+' €', body);
 }
 
 /* ================= Allocation ================= */
@@ -1080,11 +1099,19 @@ function ensureDotTip(){
   });
 }
 
+function requestNotifPermission(){
+  try{
+    const LN=window.Capacitor?.Plugins?.LocalNotifications;
+    if(LN?.requestPermissions){ LN.requestPermissions(); return; }
+  }catch(e){}
+  try{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); }catch(e){}
+}
 document.addEventListener('DOMContentLoaded',()=>{
   $('#app-ver').textContent='v'+APP_VERSION;
   document.querySelectorAll('#tabs .chip').forEach(c=>c.onclick=()=>showTab(c.dataset.tab));
   $('#refresh').onclick=()=>load(true);
   ensureDotTip();
+  requestNotifPermission();
   renderAll();
   load(false);
   setTimeout(checkForUpdate, 2500);
