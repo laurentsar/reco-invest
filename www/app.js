@@ -65,6 +65,21 @@ const ENTITIES = [
 ];
 const byName = Object.fromEntries(ENTITIES.map(e=>[e[0],e]));
 
+/* ---------- ETF / trackers : nom, alias, ticker Yahoo (tickers vérifiés) ---------- */
+const ETFS = [
+  ['Amundi MSCI World',['amundi msci world','msci world','actions mondiales'],'CW8.PA'],
+  ['Vanguard FTSE All-World',['vanguard ftse all-world','ftse all-world'],'VWCE.DE'],
+  ['Amundi PEA S&P 500',['s&p 500','s&p500','wall street'],'PE500.PA'],
+  ['SPDR S&P 500 (SPY)',['spdr s&p 500','etf spy'],'SPY'],
+  ['Invesco EQQQ Nasdaq-100',['nasdaq-100','nasdaq 100','valeurs technologiques américaines'],'EQQQ.PA'],
+  ['Invesco QQQ (Nasdaq)',['invesco qqq','etf qqq'],'QQQ'],
+  ['Amundi CAC 40',['cac 40','cac40'],'C40.PA'],
+  ['Amundi PEA Émergents',['marchés émergents','pays émergents','msci emerging'],'PAEEM.PA'],
+  ['Amundi PEA Asie Émergente',['asie émergente','msci emerging asia'],'PAASI.PA'],
+  ['Xtrackers Or physique',['once d\'or','cours de l\'or','matières premières','métaux précieux'],'XAD1.DE'],
+];
+const byNameETF = Object.fromEntries(ETFS.map(e=>[e[0],e]));
+
 /* ---------- Thématiques ---------- */
 const THEMES = [
   ['SCPI / Immobilier','🏢',['scpi','immobilier','pierre-papier','logement','promoteur','foncière']],
@@ -354,14 +369,14 @@ function zbView(name){
 }
 
 /* ---------- Presse mondiale (Google News RSS, confirmation, pas point de départ) ---------- */
-async function fetchGoogleNews(entities, force){
+async function fetchGoogleNews(entities, force, querySuffix='action bourse'){
   const fresh=12*3600*1000;
   const todo=entities.filter(e=>force || !GN[e.name] || Date.now()-GN[e.name].ts>fresh).slice(0,15);
   const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
   const pool=3;
   for(let i=0;i<todo.length;i+=pool){
     await Promise.all(todo.slice(i,i+pool).map(async e=>{
-      const q=encodeURIComponent(e.name+' action bourse');
+      const q=encodeURIComponent(e.name+' '+querySuffix);
       const url=GNEWS+q;
       try{
         let xml; try{ xml=await get(url); }catch(_){ xml=await get(PROXY+encodeURIComponent(url)); }
@@ -390,14 +405,32 @@ function techScore(q){
 }
 
 /* ================= Sentiment ================= */
-function sentiment(t){ t=' '+t.toLowerCase()+' '; let s=0; for(const w of POS) if(t.includes(w)) s++; for(const w of NEG) if(t.includes(w)) s--; return s; }
+// Inverse le signe d'un mot du lexique si une négation ("ne...pas", "sans", "aucun"…)
+// apparaît juste avant lui dans la même phrase (coupe à la ponctuation forte précédente).
+function isNegatedBefore(blob,idx){
+  const start=Math.max(0,idx-40);
+  const w=blob.slice(start,idx);
+  const cut=Math.max(w.lastIndexOf('.'),w.lastIndexOf('!'),w.lastIndexOf('?'),w.lastIndexOf(';'));
+  const win=cut>=0?w.slice(cut+1):w;
+  return /\b(ne|n['’]|sans|aucun|aucune|jamais|ni)\b/.test(win);
+}
+function sentiment(t){
+  const blob=' '+t.toLowerCase()+' ';
+  let s=0;
+  for(const w of POS){ const idx=blob.indexOf(w); if(idx!==-1) s+=isNegatedBefore(blob,idx)?-1:1; }
+  for(const w of NEG){ const idx=blob.indexOf(w); if(idx!==-1) s+=isNegatedBefore(blob,idx)?1:-1; }
+  return s;
+}
 
-function analyseEntities(){
+// includeAll : inclut toutes les valeurs de la liste même sans citation presse
+// (nécessaire pour les ETF, rarement cités individuellement par Le Revenu).
+function analyseEntities(list=ENTITIES, includeAll=false){
   const map=new Map();
+  if(includeAll) for(const [name] of list) map.set(name,{name,news:0,mentions:0,arts:[]});
   for(const it of ITEMS){
     const blob=(it.title+' '+it.desc).toLowerCase();
     const s=sentiment(it.title+' '+it.desc);
-    for(const [name,aliases] of ENTITIES){
+    for(const [name,aliases] of list){
       if(aliases.some(a=>blob.includes(a))){
         if(!map.has(name)) map.set(name,{name,news:0,mentions:0,arts:[]});
         const e=map.get(name); e.news+=s; e.mentions++; e.arts.push({title:it.title,link:it.link,s});
@@ -463,30 +496,36 @@ const LEGEND_HTML = `<div class="legend-body">
     <li>🌐 <b>Consensus mondial</b> 20 % — analystes (retenu si ≥ ${MIN_ANALYSTS})</li>
     <li>🔎 <b>Google News</b> 10 % — sentiment presse monde</li>
   </ul>
-  <p><span class="conc ok">✅ concordants</span> = les sources s'alignent (confiance élevée).
+  <p><span class="conc ok">✅ concordants</span> = les sources s'accordent au même instant (≥3/5 disponibles alignées).
+     <span class="conc mid">⚠️ x/5 sources</span> = moins de 3 sources disponibles pour cette valeur, verdict moins robuste.
      🎯 <b>Objectif</b> = cours cible + <b>potentiel</b> vs cours actuel.
      💰 <b>Boursorama</b> = ouvre la fiche pour passer l'ordre (exécution manuelle).</p>
+  <p style="color:#9fb0d4">⚠️ La concordance mesure un accord entre sources à l'instant T, pas une performance réelle.
+     Le taux de réussite <b>mesuré</b> sur l'historique des recos passées est visible dans l'onglet <b style="color:#c5d1ec">Historique</b>.</p>
 </div>`;
 
-/* ================= Rendu : Action ================= */
-function renderRecos(){
-  const el=$('#tab-recos');
-  const ents=analyseEntities();
+/* ================= Rendu : Action / ETF ================= */
+// Moteur commun aux deux onglets valeurs (mêmes 5 sources, même verdict).
+// includeAll=true (ETF) : affiche toute la liste même sans citation presse
+// (les ETF sont rarement cités individuellement par Le Revenu).
+function renderAssetTab(tabId, list, byNameMap, includeAll){
+  const el=$('#'+tabId);
+  const ents=analyseEntities(list, includeAll);
   if(!ents.length){ el.innerHTML='<div class="empty">Aucune valeur identifiée dans l\'édition en cours.<br>Tire ⟳ pour actualiser.</div>'; return; }
   const scored = ents.map(e=>{
-    const t=byName[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
+    const t=byNameMap[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
     const o={...e, ticker:t?.[2], q, tech:ts}; o.v=computeVerdict(o); return o;
   }).sort((a,b)=>b.v.composite-a.v.composite);
 
   const dot=d=>d==null?'⚪':d>0.15?'🟢':d<-0.15?'🔴':'⚪';
   let h=`<div class="rc-head">
     <div class="rc-count">🎯 ${scored.length} valeurs · 5 sources</div>
-    <button id="legend-btn" class="legend-btn" aria-label="Légende">ⓘ Légende</button>
+    <button id="legend-btn-${tabId}" class="legend-btn" aria-label="Légende">ⓘ Légende</button>
   </div>
-  <div id="legend" class="legend" hidden>${LEGEND_HTML}</div>`;
+  <div id="legend-${tabId}" class="legend" hidden>${LEGEND_HTML}</div>`;
 
   for(const e of scored){
-    const v=e.v, best=e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0], q=e.q;
+    const v=e.v, best=e.arts.length?e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0]:null, q=e.q;
     const lrDir=clamp(e.news/2,-1,1), techDir=e.tech==null?null:e.tech/4,
           zbDir=v.zv?v.zv.dir:null, consDir=v.cv?(3-v.cv.mean)/1.5:null, gDir=v.gv?v.gv.score/3:null;
     // pastilles 5 sources : tap → bulle légende (data-tip) + survol (title)
@@ -502,11 +541,12 @@ function renderRecos(){
       ${dotSpan('🔎',gDir,`Google News (presse monde) — 10 % du score. ${gDir==null?'⚫ Indispo':gDir>0.15?'🟢 Positif':gDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. Sentiment agrégé de la presse mondiale.`)}
     </div>`;
     // concordance
-    const conc = v.nSig>=2 ? (v.bull>=v.nSig && v.bull>=3 ? `<span class="conc ok" title="Toutes les sources s'alignent">✅ ${v.bull}/${v.nSig}</span>`
-      : v.bear>=v.nSig && v.bear>=3 ? `<span class="conc ko">⛔ ${v.bear}/${v.nSig}</span>`
+    const conc = v.nSig>=3 ? (v.bull>=v.nSig ? `<span class="conc ok" title="Toutes les sources s'alignent">✅ ${v.bull}/${v.nSig}</span>`
+      : v.bear>=v.nSig ? `<span class="conc ko">⛔ ${v.bear}/${v.nSig}</span>`
       : v.bull>v.bear ? `<span class="conc mid">↗︎ ${v.bull}/${v.nSig}</span>`
       : v.bear>v.bull ? `<span class="conc mid">↘︎ ${v.bear}/${v.nSig}</span>`
-      : `<span class="conc mid">↔︎ partagé</span>`) : '';
+      : `<span class="conc mid">↔︎ partagé</span>`)
+      : `<span class="conc mid" title="Peu de sources disponibles pour cette valeur — verdict moins robuste">⚠️ ${v.nSig}/5 sources</span>`;
     // ligne cours
     const priceStr = q?.price!=null ? `<b>${fmt(q.price)} €</b>` : '<span class="muted">cours n/d</span>';
     // objectifs (LR + consensus) en lignes clé-valeur
@@ -542,23 +582,25 @@ function renderRecos(){
       ${tech}
       <div class="rc-actions">
         <a class="btn-buy" href="${esc(bUrl)}" target="_blank" rel="noopener">${buyLab}</a>
-        ${best.link?`<a class="btn-src" href="${esc(best.link)}" target="_blank" rel="noopener" title="${esc(best.title)}">📰 Article</a>`:''}
+        ${best?.link?`<a class="btn-src" href="${esc(best.link)}" target="_blank" rel="noopener" title="${esc(best.title)}">📰 Article</a>`:''}
       </div>
     </div>`;
   }
   el.innerHTML=h;
-  const lb=el.querySelector('#legend'), bt=el.querySelector('#legend-btn');
+  const lb=el.querySelector('#legend-'+tabId), bt=el.querySelector('#legend-btn-'+tabId);
   bt.onclick=()=>{ lb.hidden=!lb.hidden; bt.classList.toggle('open',!lb.hidden); };
 }
+function renderRecos(){ renderAssetTab('tab-recos', ENTITIES, byName, false); }
+function renderEtf(){ renderAssetTab('tab-etf', ETFS, byNameETF, true); }
 
 /* ================= Historique des recos ================= */
 // Enregistre un point à chaque CHANGEMENT de verdict pour une valeur (date, reco, cours).
-function recordHistory(){
-  const ents=analyseEntities();
+function recordHistory(list=ENTITIES, byNameMap=byName, includeAll=false){
+  const ents=analyseEntities(list, includeAll);
   const today=new Date().toISOString().slice(0,10);
   let changed=false;
   for(const e of ents){
-    const t=byName[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
+    const t=byNameMap[e.name], q=t?QUOTES[t[2]]:null, ts=techScore(q).score;
     const v=computeVerdict({...e, ticker:t?.[2], q, tech:ts});
     let last=null; for(let i=HIST.length-1;i>=0;i--){ if(HIST[i].name===e.name){ last=HIST[i]; break; } }
     if(!last || last.lab!==v.lab){
@@ -572,15 +614,39 @@ function recordHistory(){
   if(changed) localStorage.setItem(K_HIST,JSON.stringify(HIST));
 }
 
+// Fiabilité mesurée sur l'historique réel (≠ concordance des sources, qui n'est qu'un
+// accord entre estimations au même instant t). Bull = ACHETER/Renforcer/Accumuler,
+// jugé correct si le cours a progressé depuis le changement de reco ; Bear = Alléger/
+// VENDRE, jugé correct si le cours a baissé. « Conserver » n'a pas de sens directionnel
+// clair et n'est pas noté.
+function computeReliability(){
+  const bullLabels=new Set(['ACHETER','Renforcer','Accumuler']);
+  const bearLabels=new Set(['Alléger','VENDRE']);
+  const bull={n:0,ok:0}, bear={n:0,ok:0};
+  for(const e of HIST){
+    if(e.price==null) continue;
+    const cur=e.ticker?QUOTES[e.ticker]?.price:null;
+    if(cur==null) continue;
+    const up=cur>e.price;
+    if(bullLabels.has(e.lab)){ bull.n++; if(up) bull.ok++; }
+    else if(bearLabels.has(e.lab)){ bear.n++; if(!up) bear.ok++; }
+  }
+  return {bull, bear, total:{n:bull.n+bear.n, ok:bull.ok+bear.ok}};
+}
 function renderHistory(){
   const el=$('#tab-hist');
   if(!HIST.length){ el.innerHTML='<div class="empty">Aucun historique pour l\'instant.<br>Chaque changement de reco s\'enregistre au fil des actualisations.</div>'; return; }
+  const rel=computeReliability(), pct=b=>b.n?Math.round(100*b.ok/b.n):null;
+  const relHtml = rel.total.n>=5
+    ? `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 <b style="color:#c5d1ec">Fiabilité mesurée</b> (performance réelle du cours depuis chaque changement de reco — pas une estimation) : <b style="color:#c5d1ec">${pct(rel.total)}%</b> (${rel.total.ok}/${rel.total.n})${rel.bull.n?` · Achat ${pct(rel.bull)}% (${rel.bull.ok}/${rel.bull.n})`:''}${rel.bear.n?` · Vente ${pct(rel.bear)}% (${rel.bear.ok}/${rel.bear.n})`:''}</div>`
+    : `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 Fiabilité mesurée : pas encore assez de données (minimum 5 changements de reco avec cours connu).</div>`;
   let h=`<div class="rc-head"><div class="rc-count">📜 ${HIST.length} changements</div>
     <button id="hist-clear" class="legend-btn">🗑 Vider</button></div>
+    ${relHtml}
     <div class="card" style="font-size:12px;color:var(--mut);margin-bottom:12px">Un point est ajouté quand le verdict d'une valeur change. « Depuis » = évolution du cours depuis ce changement.</div>`;
   for(let i=HIST.length-1;i>=0;i--){
     const e=HIST[i];
-    const t=byName[e.name], q=t?QUOTES[t[2]]:null, cur=q?.price;
+    const cur=e.ticker?QUOTES[e.ticker]?.price:null;
     let perf=''; if(e.price&&cur){ const p=(cur/e.price-1)*100; perf=` · depuis <i class="${p>=0?'up':'down'}">${p>=0?'+':''}${p.toFixed(1)}%</i>`; }
     const d=new Date(e.ts).toLocaleDateString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
     h+=`<div class="hist">
@@ -720,7 +786,7 @@ function renderAlloc(){
   const bars=a.rows.map(([lab,pct,col])=>`<div class="alloc-row"><div class="alloc-lab">${esc(lab)}</div><div class="alloc-bar"><div class="alloc-fill" style="width:${pct}%;background:${col}"></div></div><div class="alloc-pct">${pct}%</div></div>`).join('');
   el.innerHTML=`<div class="profiles">${chips}</div>
     <div class="card"><div class="sec-h">📊 Allocation cible · ${esc(a.label)}</div>${bars}<div class="alloc-note">${esc(a.note)}</div></div>
-    <div class="card" style="font-size:12.5px;color:var(--mut)">💡 Répartition indicative. Ajuste selon horizon, fiscalité (PEA, assurance-vie) et capacité d'épargne. Croise avec <b style="color:#c5d1ec">Action</b> (choix des valeurs) et <b style="color:#c5d1ec">Portefeuille</b> (règles de revente).</div>`;
+    <div class="card" style="font-size:12.5px;color:var(--mut)">💡 Répartition indicative. Ajuste selon horizon, fiscalité (PEA, assurance-vie) et capacité d'épargne. Croise avec <b style="color:#c5d1ec">Action</b> / <b style="color:#c5d1ec">ETF</b> (choix des valeurs) et <b style="color:#c5d1ec">Portefeuille</b> (règles de revente).</div>`;
   el.querySelectorAll('[data-prof]').forEach(b=>b.onclick=()=>{ curProfile=b.dataset.prof; renderAlloc(); });
 }
 
@@ -743,7 +809,7 @@ function renderMag(){
       <a href="https://www.lerevenu.com/immobilier" target="_blank" rel="noopener">Immobilier <span>▸</span></a>
       <a href="https://www.lerevenu.com/impots" target="_blank" rel="noopener">Impôts & fiscalité <span>▸</span></a>
     </div>
-    <div class="card" style="font-size:12.5px;color:var(--mut)">Action et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu.</div>`;
+    <div class="card" style="font-size:12.5px;color:var(--mut)">Action, ETF et Thématiques sont calculés automatiquement à partir du flux gratuit du Revenu.</div>`;
   el.querySelector('#mag-open').onclick=()=>openMag(CAFEYN,'Le Revenu');
 }
 
@@ -771,7 +837,7 @@ function showTab(name){
   document.querySelectorAll('#tabs .chip').forEach(c=>c.classList.toggle('active',c.dataset.tab===name));
   document.querySelectorAll('.tab').forEach(t=>t.hidden=t.id!=='tab-'+name);
 }
-function renderAll(){ renderRecos(); renderThemes(); renderPortfolio(); renderHistory(); renderAlloc(); renderMag(); }
+function renderAll(){ renderRecos(); renderEtf(); renderThemes(); renderPortfolio(); renderHistory(); renderAlloc(); renderMag(); }
 
 async function load(force){
   const st=$('#status'), btn=$('#refresh'); btn.classList.add('spin');
@@ -782,25 +848,31 @@ async function load(force){
     ITEMS = await fetchRss();
     localStorage.setItem(K_ITEMS,JSON.stringify({ts:Date.now(),items:ITEMS}));
     scheduleRenderAll();
-    // tickers = valeurs citées + positions
-    const ents  = analyseEntities();
+    // tickers = valeurs + ETF (toujours suivis) + positions
+    const ents    = analyseEntities();
+    const etfEnts = analyseEntities(ETFS, true);
     const cited = ents.map(e=>byName[e.name]?.[2]).filter(Boolean);
+    const etfTk = ETFS.map(e=>e[2]);
     const held  = PORT.map(p=>p.ticker).filter(Boolean);
     st.textContent='Cours & indicateurs techniques…';
-    await loadQuotes([...new Set([...cited,...held])], force);
+    await loadQuotes([...new Set([...cited,...etfTk,...held])], force);
     scheduleRenderAll();
     st.textContent='Objectifs de cours (Le Revenu)…';
     await fetchTargets(ents, force);
+    await fetchTargets(etfEnts, force);
     scheduleRenderAll();
     st.textContent='Consensus analystes mondial…';
-    await fetchConsensus([...new Set([...cited,...held])], force);
+    await fetchConsensus([...new Set([...cited,...etfTk,...held])], force);
     scheduleRenderAll();
     st.textContent='Consensus Zonebourse (France)…';
     await fetchZonebourse(ents, force);
+    await fetchZonebourse(etfEnts, force);
     scheduleRenderAll();
     st.textContent='Presse mondiale (Google News)…';
     await fetchGoogleNews(ents, force);
-    recordHistory();   // enregistre les changements de reco (après toutes les sources)
+    await fetchGoogleNews(etfEnts, force, 'ETF');
+    recordHistory();                          // valeurs
+    recordHistory(ETFS, byNameETF, true);     // ETF
     scheduleRenderAll();
     st.textContent=ITEMS.length+' articles · 5 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   }catch(e){
