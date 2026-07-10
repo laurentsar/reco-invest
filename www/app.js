@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.09';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.10';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -838,7 +838,7 @@ function renderPortfolio(){
     const val = q ? q.price*p.qty : null;
     const ev = evalRules(p,q);
     const badge = ev.action==='SELL'?['🔴 VENDRE','b-red']:ev.action==='TRIM'?['🟠 ALLÉGER','b-amber']:['🟢 CONSERVER','b-green'];
-    if(ev.action!=='HOLD') alerts.push({name:p.name,action:ev.action,reasons:ev.reasons});
+    if(ev.action!=='HOLD') alerts.push({name:p.name,ticker:p.ticker,action:ev.action,reasons:ev.reasons});
     const rules=[]; if(p.sl) rules.push(`SL -${p.sl}%`); if(p.tp) rules.push(`TP +${p.tp}%`); if(p.target) rules.push(`Obj ${fmt(p.target)}`); if(p.rsi) rules.push(`RSI ${p.rsi}`);
     h+=`<div class="card">
       <div class="pos-head">
@@ -889,40 +889,116 @@ function editPosition(idx){
   renderPortfolio();
 }
 
-/* Notification (Capacitor si dispo, sinon Web Notifications, sinon rien) */
-function sendNotification(title, body){
+/* ================= Notifications (Capacitor natif, repli Web Notification) =================
+ * Une notification par valeur (pas un bloc de texte fourre-tout) avec un bouton d'action qui
+ * ouvre directement la fiche Boursorama pour passer l'ordre, + une notif "résumé" groupée si
+ * plusieurs alertes tombent en même temps (repli Android : les notifs du groupe se replient
+ * sous le résumé). Dédupliqué par valeur avec un délai de rappel pour ne pas spammer à chaque
+ * ouverture de l'app si rien n'a changé. */
+const NOTIF_CHANNEL = 'reco-alerts';
+const K_NOTIF_LOG = 'recoInvest:notiflog';
+let NOTIF_LOG = {};
+try{ NOTIF_LOG = JSON.parse(localStorage.getItem(K_NOTIF_LOG)||'{}'); }catch(e){ NOTIF_LOG={}; }
+function shouldNotify(key, cooldownMs){
+  const last=NOTIF_LOG[key];
+  if(last && Date.now()-last<cooldownMs) return false;
+  NOTIF_LOG[key]=Date.now();
+  localStorage.setItem(K_NOTIF_LOG, JSON.stringify(NOTIF_LOG));
+  return true;
+}
+function openExternal(url){
+  try{ const P=window.Capacitor?.Plugins; if(P?.Browser){ P.Browser.open({url}); return; } }catch(e){}
+  try{ window.open(url,'_blank','noopener'); }catch(e){}
+}
+async function setupNotifications(){
   try{
     const LN=window.Capacitor?.Plugins?.LocalNotifications;
-    if(LN){ LN.schedule({notifications:[{id:Date.now()%100000,title,body}]}); return; }
+    if(!LN) return;
+    try{ await LN.createChannel?.({ id:NOTIF_CHANNEL, name:'Alertes Reco Invest', importance:5, visibility:1, vibration:true }); }catch(e){}
+    try{ await LN.registerActionTypes?.({ types:[
+      { id:'REC_BUY',  actions:[{ id:'open', title:'💰 Acheter sur Boursorama' }] },
+      { id:'REC_SELL', actions:[{ id:'open', title:'💰 Vendre sur Boursorama' }] },
+    ]}); }catch(e){}
+    LN.addListener?.('localNotificationActionPerformed', ev=>{
+      const url=ev?.notification?.extra?.url;
+      if(url) openExternal(url);
+    });
+    try{ await LN.requestPermissions?.(); }catch(e){}
+  }catch(e){}
+  try{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); }catch(e){}
+}
+let _notifSeq=0;
+function nextNotifId(){ return (_notifSeq=(_notifSeq+1)%900000)+100; }
+function sendNotification({title, body, url, actionTypeId, group, groupSummary, iconColor}){
+  try{
+    const LN=window.Capacitor?.Plugins?.LocalNotifications;
+    if(LN){
+      LN.schedule({notifications:[{
+        id: nextNotifId(), title, body,
+        channelId: NOTIF_CHANNEL,
+        actionTypeId: actionTypeId||undefined,
+        extra: url?{url}:undefined,
+        group: group||undefined,
+        groupSummary: !!groupSummary,
+        iconColor: iconColor||undefined,
+        autoCancel: true,
+      }]});
+      return;
+    }
   }catch(e){}
   try{
     if('Notification' in window){
-      if(Notification.permission==='granted') new Notification(title,{body});
-      else if(Notification.permission!=='denied') Notification.requestPermission().then(pm=>{ if(pm==='granted') new Notification(title,{body}); });
+      const fire=()=>{ const n=new Notification(title,{body}); if(url) n.onclick=()=>{ try{window.focus();}catch(_){} openExternal(url); n.close(); }; };
+      if(Notification.permission==='granted') fire();
+      else if(Notification.permission!=='denied') Notification.requestPermission().then(pm=>{ if(pm==='granted') fire(); });
     }
   }catch(e){}
 }
-let lastNotifKey='';
+
+const SELL_COOLDOWN = 6*3600*1000;   // une alerte de vente peut se rappeler après 6h si toujours active
 function notify(alerts){
-  const key = alerts.map(a=>a.action+a.name).join('|');
-  if(key===lastNotifKey) return; lastNotifKey=key;
-  const body = alerts.map(a=>(a.action==='SELL'?'Vendre ':'Alléger ')+a.name).join(', ');
-  sendNotification('Reco Invest — alerte revente', body);
+  const due = alerts.filter(a=>shouldNotify('sell:'+a.name+':'+a.action, SELL_COOLDOWN));
+  if(!due.length) return;
+  const group='reco-sell';
+  if(due.length>1){
+    sendNotification({ title:'🔴 '+due.length+' alertes sur ton portefeuille',
+      body: due.map(a=>a.name).join(', '), group, groupSummary:true, iconColor:'#ef4444' });
+  }
+  for(const a of due){
+    sendNotification({
+      title:(a.action==='SELL'?'🔴 Vendre ':'🟠 Alléger ')+a.name,
+      body: a.reasons[0],
+      url: boursoUrl(a.ticker, a.name),
+      actionTypeId:'REC_SELL',
+      group, iconColor:'#ef4444',
+    });
+  }
 }
 
 /* Notification opportunité d'achat sous un seuil de prix (par défaut 20 €). */
 const BUY_PRICE_ALERT = 20;
-let lastBuyNotifKey={};
+const BUY_COOLDOWN = 20*3600*1000;   // au plus un rappel par jour tant que l'opportunité reste valide
 function notifyBuyOpportunities(scored, tabId){
   const opps = scored.filter(e=>{
     const v=e.v;
     return /green|amber/.test(v.cls) && v.composite>=0.05 && e.q?.price!=null && e.q.price<BUY_PRICE_ALERT;
-  });
-  const key = opps.map(e=>e.name+e.v.lab).sort().join('|');
-  if(key===(lastBuyNotifKey[tabId]||'')) return; lastBuyNotifKey[tabId]=key;
+  }).filter(e=>shouldNotify('buy:'+tabId+':'+e.name+':'+e.v.lab, BUY_COOLDOWN));
   if(!opps.length) return;
-  const body = opps.slice(0,6).map(e=>`${e.name} ${fmt(e.q.price)} € (${e.v.lab})`).join(', ');
-  sendNotification('Reco Invest — opportunité < '+BUY_PRICE_ALERT+' €', body);
+  const group='reco-buy-'+tabId;
+  if(opps.length>1){
+    sendNotification({ title:'🟢 '+opps.length+' opportunités d\'achat < '+BUY_PRICE_ALERT+' €',
+      body: opps.map(e=>e.name+' '+fmt(e.q.price)+' €').join(', '), group, groupSummary:true, iconColor:'#22c55e' });
+  }
+  for(const e of opps){
+    const target=e.v.zv?.target||e.v.cv?.target||e.v.sa?.target||TARGETS[e.name]?.target;
+    sendNotification({
+      title:'🟢 '+e.name+' — '+e.v.lab,
+      body: fmt(e.q.price)+' €'+(e.ticker?' · '+e.ticker:'')+(target?' · objectif '+fmt(target)+' €':''),
+      url: boursoUrl(e.ticker, e.name),
+      actionTypeId:'REC_BUY',
+      group, iconColor:'#22c55e',
+    });
+  }
 }
 
 /* ================= Allocation ================= */
@@ -1099,19 +1175,12 @@ function ensureDotTip(){
   });
 }
 
-function requestNotifPermission(){
-  try{
-    const LN=window.Capacitor?.Plugins?.LocalNotifications;
-    if(LN?.requestPermissions){ LN.requestPermissions(); return; }
-  }catch(e){}
-  try{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); }catch(e){}
-}
 document.addEventListener('DOMContentLoaded',()=>{
   $('#app-ver').textContent='v'+APP_VERSION;
   document.querySelectorAll('#tabs .chip').forEach(c=>c.onclick=()=>showTab(c.dataset.tab));
   $('#refresh').onclick=()=>load(true);
   ensureDotTip();
-  requestNotifPermission();
+  setupNotifications();
   renderAll();
   load(false);
   setTimeout(checkForUpdate, 2500);
