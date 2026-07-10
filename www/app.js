@@ -667,6 +667,25 @@ function renderMag(){
 }
 
 /* ================= Navigation / chargement ================= */
+/* Rendu différé : coalesce les rendus successifs de load() en un seul, et ne
+ * remplace jamais le DOM pendant un scroll/geste tactile en cours (sinon
+ * innerHTML= coupe le scroll en plein vol sur WebView mobile). */
+let scrolling=false, scrollEndTimer=null, renderTimer=null, renderPending=false;
+function markScrollActivity(){
+  scrolling=true;
+  clearTimeout(scrollEndTimer);
+  scrollEndTimer=setTimeout(()=>{ scrolling=false; if(renderPending){ renderPending=false; renderAll(); } }, 200);
+}
+document.addEventListener('touchstart', markScrollActivity, {passive:true, capture:true});
+document.addEventListener('touchmove', markScrollActivity, {passive:true, capture:true});
+document.addEventListener('scroll', markScrollActivity, {passive:true, capture:true});
+function scheduleRenderAll(){
+  clearTimeout(renderTimer);
+  renderTimer=setTimeout(()=>{
+    if(scrolling){ renderPending=true; return; }
+    renderAll();
+  }, 300);
+}
 function showTab(name){
   document.querySelectorAll('#tabs .chip').forEach(c=>c.classList.toggle('active',c.dataset.tab===name));
   document.querySelectorAll('.tab').forEach(t=>t.hidden=t.id!=='tab-'+name);
@@ -681,29 +700,29 @@ async function load(force){
     st.textContent='Analyse de l\'édition Le Revenu…';
     ITEMS = await fetchRss();
     localStorage.setItem(K_ITEMS,JSON.stringify({ts:Date.now(),items:ITEMS}));
-    renderRecos(); renderThemes();
+    scheduleRenderAll();
     // tickers = valeurs citées + positions
     const ents  = analyseEntities();
     const cited = ents.map(e=>byName[e.name]?.[2]).filter(Boolean);
     const held  = PORT.map(p=>p.ticker).filter(Boolean);
     st.textContent='Cours & indicateurs techniques…';
     await loadQuotes([...new Set([...cited,...held])], force);
-    renderAll();
+    scheduleRenderAll();
     st.textContent='Objectifs de cours (Le Revenu)…';
     await fetchTargets(ents, force);
-    renderAll();
+    scheduleRenderAll();
     st.textContent='Consensus analystes mondial…';
     await fetchConsensus([...new Set([...cited,...held])], force);
-    renderAll();
+    scheduleRenderAll();
     st.textContent='Presse mondiale (Google News)…';
     await fetchGoogleNews(ents, force);
     recordHistory();   // enregistre les changements de reco (après toutes les sources)
-    renderAll();
+    scheduleRenderAll();
     st.textContent=ITEMS.length+' articles · 4 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   }catch(e){
     if(!ITEMS.length) st.textContent='⚠️ Hors-ligne et aucun cache.';
     else st.textContent='⚠️ Actualisation partielle — cache affiché.';
-    renderAll();
+    scheduleRenderAll();
   }finally{ btn.classList.remove('spin'); }
 }
 
