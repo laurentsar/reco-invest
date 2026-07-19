@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.13';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.14';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const RSS    = 'https://www.lerevenu.com/rss.xml';
 const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
@@ -172,15 +172,20 @@ async function fetchResilient(url, get){
 }
 
 /* ================= RSS ================= */
+// Le flux Le Revenu contient parfois des « & » non échappés dans les titres (ex.
+// "Trump Media & Technology Group", vu en prod) : XML mal formé, que le parseur XML
+// stricte de la WebView Android tronque silencieusement à l'élément fautif — 10
+// articles récupérés sur 50 au lieu d'une erreur explicite. On échappe tout « & »
+// qui n'est pas déjà une entité valide avant de parser.
+const sanitizeXml = xml=>xml.replace(/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g,'&amp;');
+
 async function fetchRss(){
   const get = async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
-  // Casse-cache sur l'URL cible : certains réseaux mobiles/opérateurs mettent en cache
-  // le flux RSS par URL exacte (vu en prod : 10 articles renvoyés au lieu de 50, sans
-  // erreur — un cache transparent, pas une panne). Un paramètre unique par requête
-  // évite qu'un tel cache serve une version tronquée/périmée.
+  // Casse-cache sur l'URL cible, en plus (défense en profondeur contre un éventuel
+  // cache réseau qui servirait une version périmée).
   const bust = RSS+(RSS.includes('?')?'&':'?')+'_='+Date.now();
   const xml = await fetchResilient(bust, get);
-  const doc = new DOMParser().parseFromString(xml,'text/xml');
+  const doc = new DOMParser().parseFromString(sanitizeXml(xml),'text/xml');
   const items = [...doc.querySelectorAll('item')].map(it=>({
     title: stripTags(it.querySelector('title')?.textContent).replace(/>$/,''),
     desc:  stripTags(it.querySelector('description')?.textContent),
@@ -516,7 +521,7 @@ async function fetchGoogleNews(entities, force, querySuffix='action bourse'){
       const url=GNEWS+q;
       try{
         const xml = await fetchResilient(url, get);
-        const doc=new DOMParser().parseFromString(xml,'text/xml');
+        const doc=new DOMParser().parseFromString(sanitizeXml(xml),'text/xml');
         const titles=[...doc.querySelectorAll('item title')].slice(0,12).map(t=>t.textContent||'');
         let score=0; for(const t of titles) score+=sentiment(t);
         GN[e.name]={score, n:titles.length, ts:Date.now()};
