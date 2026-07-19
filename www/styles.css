@@ -146,6 +146,18 @@ body{
 .alloc-pct{flex:none; width:38px; text-align:right; font-size:13px; font-weight:700; color:var(--mut)}
 .alloc-note{font-size:12.5px; color:var(--mut); margin-top:10px; line-height:1.5}
 
+/* simulateur */
+.sim-field{display:block; margin:12px 0 0}
+.sim-field:first-of-type{margin-top:4px}
+.sim-field>span{display:block; font-size:12.5px; color:var(--mut); margin-bottom:5px}
+.sim-field select, .sim-field input{
+  width:100%; background:#0e1729; border:1px solid var(--line); color:var(--tx);
+  font-size:14.5px; font-family:inherit; padding:10px 11px; border-radius:10px;
+}
+.sim-field select:focus, .sim-field input:focus{outline:2px solid var(--accent); outline-offset:-1px}
+.sim-note{font-size:12px; color:var(--mut); margin-top:12px; line-height:1.5}
+.sim-note b{color:#c5d1ec}
+
 /* fiabilité par semaine (onglet Historique) */
 .wk-row{display:flex; align-items:center; gap:10px; margin:7px 0}
 .wk-lab{flex:none; width:52px; font-size:12px; color:var(--mut)}

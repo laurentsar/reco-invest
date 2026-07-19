@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.16';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.17';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const RSS    = 'https://www.lerevenu.com/rss.xml';
 const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
@@ -295,6 +295,7 @@ function computeQuote(closes){
     sma20:sma(closes,20), sma50:sma(closes,50), sma200:sma(closes,200),
     rsi:rsi(closes,14), macd:m.macd, sig:m.sig,
     m1:perf(closes,21), m3:perf(closes,63), m6:perf(closes,126),
+    y1:perf(closes,Math.min(closes.length-1,251)),
     vol:volatility(closes,21), ts:Date.now() };
 }
 
@@ -1142,6 +1143,82 @@ function renderAlloc(){
   el.querySelectorAll('[data-prof]').forEach(b=>b.onclick=()=>{ curProfile=b.dataset.prof; renderAlloc(); });
 }
 
+/* ================= Simulateur ================= */
+// Taux réglementés : valeurs de référence à titre indicatif (évoluent par arrêté,
+// pas de source publique fiable à scraper côté client) — 100 % modifiables dans le
+// champ Taux. Actions/ETF : le taux par défaut proposé est la performance réelle sur
+// 12 mois glissants (QUOTES[...].y1, déjà calculée depuis les cours Yahoo Finance),
+// reprise comme simple point de départ — pas une garantie de performance future.
+const REG_RATES = [
+  ['Livret A', 1.7],
+  ['LEP', 2.7],
+  ['PEL (nouveaux plans)', 1.75],
+  ['Fonds euros (assurance-vie)', 2.5],
+];
+
+// Valeur future d'un capital initial + versements mensuels, taux annuel composé
+// mensuellement (hypothèse simplifiée : taux fixe, pas de volatilité ni de fiscalité).
+function simCompute(amount, monthly, years, ratePct){
+  const n = Math.max(0, Math.round(years*12));
+  const versed = amount + monthly*n;
+  const rm = ratePct/100/12;
+  let fv;
+  if(Math.abs(rm)<1e-9) fv = versed;
+  else fv = amount*Math.pow(1+rm,n) + monthly*((Math.pow(1+rm,n)-1)/rm);
+  return { fv, versed, gain: fv-versed };
+}
+
+function renderSimulator(){
+  const el=$('#tab-sim');
+  if(el.dataset.built) return;   // ne pas reconstruire : perdrait la saisie en cours
+  el.dataset.built='1';
+
+  const optReg = REG_RATES.map((r,i)=>`<option value="reg:${i}">${esc(r[0])}</option>`).join('');
+  const optAct = ENTITIES.map(e=>`<option value="act:${e[2]}">${esc(e[0])}</option>`).join('');
+  const optEtf = ETFS.map(e=>`<option value="etf:${e[2]}">${esc(e[0])}</option>`).join('');
+
+  el.innerHTML = `<div class="card">
+    <div class="sec-h">🧮 Simulateur de placement</div>
+    <label class="sim-field"><span>Placement</span>
+      <select id="sim-kind">
+        <optgroup label="Produits réglementés">${optReg}</optgroup>
+        <optgroup label="Actions">${optAct}</optgroup>
+        <optgroup label="ETF">${optEtf}</optgroup>
+      </select>
+    </label>
+    <label class="sim-field"><span>Taux annuel estimé (%)</span><input type="number" id="sim-rate" step="0.1"></label>
+    <label class="sim-field"><span>Montant initial (€)</span><input type="number" id="sim-amount" value="1000" min="0"></label>
+    <label class="sim-field"><span>Versement mensuel (€)</span><input type="number" id="sim-monthly" value="100" min="0"></label>
+    <label class="sim-field"><span>Durée (années)</span><input type="number" id="sim-years" value="10" min="1" max="50"></label>
+    <div class="sim-note">Taux réglementés à titre indicatif — vérifie/ajuste-les s'ils ont changé. Actions/ETF : performance réelle sur 12 mois glissants reprise comme hypothèse de départ, <b>modifiable</b> ; les performances passées ne préjugent pas des performances futures.</div>
+  </div>
+  <div class="card" id="sim-result"></div>`;
+
+  const kindSel=el.querySelector('#sim-kind'), rateInp=el.querySelector('#sim-rate'),
+        amountInp=el.querySelector('#sim-amount'), monthlyInp=el.querySelector('#sim-monthly'),
+        yearsInp=el.querySelector('#sim-years'), resEl=el.querySelector('#sim-result');
+
+  const defaultRateFor = val=>{
+    const [k,id]=val.split(':');
+    if(k==='reg') return REG_RATES[+id][1];
+    const q=QUOTES[id];
+    return q?.y1!=null ? +q.y1.toFixed(1) : 7;
+  };
+  const recompute=()=>{
+    const amount=parseFloat(amountInp.value)||0, monthly=parseFloat(monthlyInp.value)||0,
+          years=parseFloat(yearsInp.value)||0, rate=parseFloat(rateInp.value)||0;
+    const r=simCompute(amount,monthly,years,rate);
+    resEl.innerHTML = `
+      <div class="kv"><span>Total versé</span><b>${fmt(r.versed)} €</b></div>
+      <div class="kv"><span>Valeur finale estimée</span><b>${fmt(r.fv)} €</b></div>
+      <div class="kv"><span>Gain estimé</span><b><i class="${r.gain>=0?'up':'down'}">${r.gain>=0?'+':''}${fmt(r.gain)} €</i></b></div>`;
+  };
+  kindSel.onchange=()=>{ rateInp.value=defaultRateFor(kindSel.value); recompute(); };
+  [rateInp,amountInp,monthlyInp,yearsInp].forEach(i=>i.oninput=recompute);
+  rateInp.value=defaultRateFor(kindSel.value);
+  recompute();
+}
+
 /* ================= Magazine ================= */
 function openMag(url,title){
   try{
@@ -1189,7 +1266,7 @@ function showTab(name){
   document.querySelectorAll('#tabs .chip').forEach(c=>c.classList.toggle('active',c.dataset.tab===name));
   document.querySelectorAll('.tab').forEach(t=>t.hidden=t.id!=='tab-'+name);
 }
-function renderAll(){ renderRecos(); renderEtf(); renderThemes(); renderPortfolio(); renderHistory(); renderAlloc(); renderMag(); }
+function renderAll(){ renderRecos(); renderEtf(); renderThemes(); renderPortfolio(); renderHistory(); renderAlloc(); renderSimulator(); renderMag(); }
 
 async function load(force){
   const st=$('#status'), btn=$('#refresh'); btn.classList.add('spin');
