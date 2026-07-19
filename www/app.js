@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.12';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.13';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const RSS    = 'https://www.lerevenu.com/rss.xml';
 const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
@@ -174,7 +174,12 @@ async function fetchResilient(url, get){
 /* ================= RSS ================= */
 async function fetchRss(){
   const get = async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
-  const xml = await fetchResilient(RSS, get);
+  // Casse-cache sur l'URL cible : certains réseaux mobiles/opérateurs mettent en cache
+  // le flux RSS par URL exacte (vu en prod : 10 articles renvoyés au lieu de 50, sans
+  // erreur — un cache transparent, pas une panne). Un paramètre unique par requête
+  // évite qu'un tel cache serve une version tronquée/périmée.
+  const bust = RSS+(RSS.includes('?')?'&':'?')+'_='+Date.now();
+  const xml = await fetchResilient(bust, get);
   const doc = new DOMParser().parseFromString(xml,'text/xml');
   const items = [...doc.querySelectorAll('item')].map(it=>({
     title: stripTags(it.querySelector('title')?.textContent).replace(/>$/,''),
