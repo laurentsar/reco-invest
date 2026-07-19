@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.10';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.11';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
@@ -763,6 +763,67 @@ function computeReliability(){
   }
   return {bull, bear, total:{n:bull.n+bear.n, ok:bull.ok+bear.ok}};
 }
+
+// Début de semaine (lundi) d'un timestamp, pour grouper l'historique semaine par semaine.
+function weekStartISO(ts){
+  const d=new Date(ts), day=(d.getDay()+6)%7;
+  d.setHours(0,0,0,0); d.setDate(d.getDate()-day);
+  return d.toISOString().slice(0,10);
+}
+// Même règle que computeReliability (cours actuel vs cours au moment du changement de
+// reco), mais groupée par semaine du changement : capitalise sur l'historique pour
+// montrer si le taux de réussite se maintient dans le temps ou dérive, plutôt qu'une
+// seule moyenne globale figée.
+function computeReliabilityByWeek(nWeeks=8){
+  const bullLabels=new Set(['ACHETER','Renforcer','Accumuler']);
+  const bearLabels=new Set(['Alléger','VENDRE']);
+  const buckets=new Map();
+  for(const e of HIST){
+    if(e.price==null || (!bullLabels.has(e.lab) && !bearLabels.has(e.lab))) continue;
+    const cur=e.ticker?QUOTES[e.ticker]?.price:null;
+    if(cur==null) continue;
+    const ok = bullLabels.has(e.lab) ? cur>e.price : cur<=e.price;
+    const wk=weekStartISO(e.ts);
+    const b=buckets.get(wk)||{n:0,ok:0}; b.n++; if(ok) b.ok++; buckets.set(wk,b);
+  }
+  const start=new Date(), day=(start.getDay()+6)%7;
+  start.setHours(0,0,0,0); start.setDate(start.getDate()-day);
+  const out=[];
+  for(let i=nWeeks-1;i>=0;i--){
+    const d=new Date(start); d.setDate(d.getDate()-i*7);
+    const key=d.toISOString().slice(0,10);
+    const b=buckets.get(key)||{n:0,ok:0};
+    out.push({ weekStart:key, label:d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}),
+      n:b.n, ok:b.ok, pct:b.n?Math.round(100*b.ok/b.n):null });
+  }
+  return out;
+}
+// Rendu du bloc « Fiabilité par semaine » — visible dès que ≥ 2 semaines ont des données.
+function renderWeeklyReliability(){
+  const weeks=computeReliabilityByWeek(8);
+  const withData=weeks.filter(w=>w.n>0);
+  if(withData.length<2) return '';
+  const barColor=p=>p==null?'#4b5b7a':p>=60?'var(--green)':p>=40?'var(--amber)':'var(--red)';
+  const rows=weeks.map(w=>`
+    <div class="wk-row">
+      <span class="wk-lab">${w.label}</span>
+      <div class="wk-bar"><div class="wk-fill" style="width:${w.pct??0}%;background:${barColor(w.pct)}"></div></div>
+      <span class="wk-pct">${w.pct==null?'—':w.pct+'%'}${w.n?` <i>(${w.n})</i>`:''}</span>
+    </div>`).join('');
+  const avg=arr=>{ const n=arr.reduce((a,x)=>a+x.n,0), ok=arr.reduce((a,x)=>a+x.ok,0); return n?100*ok/n:null; };
+  const mid=Math.ceil(withData.length/2);
+  let trend='';
+  if(withData.length>=4){
+    const diff=avg(withData.slice(-mid))-avg(withData.slice(0,mid));
+    trend = diff>=8?'📈 en amélioration':diff<=-8?'📉 en baisse':'➡️ stable';
+  }
+  return `<div class="card">
+    <div class="sec-h">📆 Fiabilité par semaine (8 dernières)</div>
+    ${rows}
+    ${trend?`<div class="alloc-note">Tendance sur la période : <b style="color:#c5d1ec">${trend}</b></div>`:'<div class="alloc-note">Encore trop peu de semaines pour dégager une tendance.</div>'}
+  </div>`;
+}
+
 function renderHistory(){
   const el=$('#tab-hist');
   if(!HIST.length){ el.innerHTML='<div class="empty">Aucun historique pour l\'instant.<br>Chaque changement de reco s\'enregistre au fil des actualisations.</div>'; return; }
@@ -770,9 +831,11 @@ function renderHistory(){
   const relHtml = rel.total.n>=5
     ? `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 <b style="color:#c5d1ec">Fiabilité mesurée</b> (performance réelle du cours depuis chaque changement de reco — pas une estimation) : <b style="color:#c5d1ec">${pct(rel.total)}%</b> (${rel.total.ok}/${rel.total.n})${rel.bull.n?` · Achat ${pct(rel.bull)}% (${rel.bull.ok}/${rel.bull.n})`:''}${rel.bear.n?` · Vente ${pct(rel.bear)}% (${rel.bear.ok}/${rel.bear.n})`:''}</div>`
     : `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 Fiabilité mesurée : pas encore assez de données (minimum 5 changements de reco avec cours connu).</div>`;
+  const weekHtml = renderWeeklyReliability();
   let h=`<div class="rc-head"><div class="rc-count">📜 ${HIST.length} changements</div>
     <button id="hist-clear" class="legend-btn">🗑 Vider</button></div>
     ${relHtml}
+    ${weekHtml}
     <div class="card" style="font-size:12px;color:var(--mut);margin-bottom:12px">Un point est ajouté quand le verdict d'une valeur change. « Depuis » = évolution du cours depuis ce changement.</div>`;
   for(let i=HIST.length-1;i>=0;i--){
     const e=HIST[i];
