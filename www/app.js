@@ -14,7 +14,6 @@
 
 const APP_VERSION = '1.11';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
-const PROXY  = 'https://api.allorigins.win/raw?url=';
 const RSS    = 'https://www.lerevenu.com/rss.xml';
 const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
 const YF     = 'https://query1.finance.yahoo.com/v8/finance/chart/';
@@ -152,11 +151,30 @@ const stripTags = s=>(s||'').replace(/<[^>]+>/g,'').replace(/&[a-z]+;/gi,' ').tr
 const fmt = n=>n==null?'—':n.toLocaleString('fr-FR',{maximumFractionDigits:2});
 const savePort = ()=>localStorage.setItem(K_PORT,JSON.stringify(PORT));
 
+/* ---------- Proxies CORS de repli ----------
+ * La plupart des sources (lerevenu.com, Zonebourse, TradingView…) n'envoient pas
+ * d'en-tête Access-Control-Allow-Origin : le fetch direct échoue depuis l'app.
+ * On tente d'abord le direct, puis chaque proxy public de la liste en cascade —
+ * si l'un d'eux tombe en panne (ex. api.allorigins.win en 522), les suivants prennent
+ * le relais au lieu de bloquer toutes les sources d'un coup. */
+const CORS_PROXIES = [
+  u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),
+  u=>'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u),
+  u=>'https://corsproxy.io/?url='+encodeURIComponent(u),
+];
+async function fetchResilient(url, get){
+  try{ return await get(url); }catch(e){}
+  let lastErr;
+  for(const proxy of CORS_PROXIES){
+    try{ return await get(proxy(url)); }catch(e){ lastErr=e; }
+  }
+  throw lastErr||new Error('toutes les sources ont échoué');
+}
+
 /* ================= RSS ================= */
 async function fetchRss(){
   const get = async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
-  let xml;
-  try{ xml = await get(RSS); } catch(e){ xml = await get(PROXY+encodeURIComponent(RSS)); }
+  const xml = await fetchResilient(RSS, get);
   const doc = new DOMParser().parseFromString(xml,'text/xml');
   const items = [...doc.querySelectorAll('item')].map(it=>({
     title: stripTags(it.querySelector('title')?.textContent).replace(/>$/,''),
@@ -185,7 +203,7 @@ function parseTarget(txt){
 
 async function fetchArticleText(link){
   const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
-  let html; try{ html=await get(link); }catch(e){ html=await get(PROXY+encodeURIComponent(link)); }
+  const html = await fetchResilient(link, get);
   return html.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ')
              .replace(/<[^>]+>/g,' ').replace(/&[a-z]+;/gi,' ');
 }
@@ -241,8 +259,7 @@ function computeQuote(closes){
 async function fetchQuote(ticker){
   const url = YF+encodeURIComponent(ticker)+'?range=1y&interval=1d';
   const get = async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.json(); };
-  let j;
-  try{ j = await get(url); } catch(e){ j = await get(PROXY+encodeURIComponent(url)); }
+  const j = await fetchResilient(url, get);
   const res = j?.chart?.result?.[0];
   const closes = (res?.indicators?.quote?.[0]?.close||[]).filter(x=>x!=null);
   if(closes.length<30) throw new Error('série courte');
@@ -316,7 +333,7 @@ async function zbResolveId(name, mnemo){
   if(ZBID[name]) return ZBID[name];
   const url=ZONEBOURSE+'/recherche/?q='+encodeURIComponent(name);
   const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
-  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const html = await fetchResilient(url, get);
   const doc=new DOMParser().parseFromString(html,'text/html');
   let fallback=null, best=null;
   for(const row of doc.querySelectorAll('tr')){
@@ -339,7 +356,7 @@ async function fetchOneZonebourse(name,mnemo){
   const id=await zbResolveId(name,mnemo);
   const url=ZONEBOURSE+'/'+id+'/';
   const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
-  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const html = await fetchResilient(url, get);
   const doc=new DOMParser().parseFromString(html,'text/html');
   const box=doc.querySelector('#consensusDetail');
   if(!box) throw new Error('bloc consensus indisponible');
@@ -395,7 +412,7 @@ async function fetchOneTradingView(ticker){
   if(!sym) throw new Error('symbole TradingView non mappé');
   const url=TRADINGVIEW+'/symbols/'+sym+'/technicals/';
   const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
-  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const html = await fetchResilient(url, get);
   const doc=new DOMParser().parseFromString(html,'text/html');
   let rating=null;
   for(const titleEl of doc.querySelectorAll('[class*="speedometerTitle"]')){
@@ -443,7 +460,7 @@ async function fetchOneStockAnalysis(ticker){
   if(!path) throw new Error('symbole StockAnalysis non mappé');
   const url=STOCKANALYSIS+path;
   const get=async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
-  let html; try{ html=await get(url); }catch(e){ html=await get(PROXY+encodeURIComponent(url)); }
+  const html = await fetchResilient(url, get);
   const doc=new DOMParser().parseFromString(html,'text/html');
   let label=null;
   for(const el of doc.querySelectorAll('div')){
@@ -493,7 +510,7 @@ async function fetchGoogleNews(entities, force, querySuffix='action bourse'){
       const q=encodeURIComponent(e.name+' '+querySuffix);
       const url=GNEWS+q;
       try{
-        let xml; try{ xml=await get(url); }catch(_){ xml=await get(PROXY+encodeURIComponent(url)); }
+        const xml = await fetchResilient(url, get);
         const doc=new DOMParser().parseFromString(xml,'text/xml');
         const titles=[...doc.querySelectorAll('item title')].slice(0,12).map(t=>t.textContent||'');
         let score=0; for(const t of titles) score+=sentiment(t);
