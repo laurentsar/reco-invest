@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.14';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.15';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const RSS    = 'https://www.lerevenu.com/rss.xml';
 const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
@@ -179,18 +179,50 @@ async function fetchResilient(url, get){
 // qui n'est pas déjà une entité valide avant de parser.
 const sanitizeXml = xml=>xml.replace(/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g,'&amp;');
 
+// Extraction tolérante d'un flux <item> par regex, sans exiger un XML bien formé.
+// Repli utilisé quand le nettoyage ci-dessus ne suffit pas (autre caractère fautif
+// non anticipé) : contrairement à DOMParser, une regex ne s'arrête pas à la première
+// erreur de bien-formation et récupère quand même tous les articles.
+function extractItemsRegex(xmlRaw){
+  const blocks = xmlRaw.match(/<item[\s\S]*?<\/item>/g) || [];
+  const grab = (block,tag)=>{
+    const m=block.match(new RegExp('<'+tag+'[^>]*>([\\s\\S]*?)</'+tag+'>')); if(!m) return '';
+    // Contrairement à DOMParser, la capture regex garde le marqueur <![CDATA[...]]>
+    // littéralement : sans texte "> à l'intérieur, stripTags le prendrait pour une
+    // seule balise et effacerait tout le contenu. On le retire d'abord.
+    const cdata=m[1].match(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/);
+    return cdata?cdata[1]:m[1];
+  };
+  return blocks.map(b=>({
+    title: stripTags(grab(b,'title')).replace(/>$/,''),
+    desc:  stripTags(grab(b,'description')),
+    link:  grab(b,'link').trim(),
+  })).filter(i=>i.title);
+}
+
+// Parse un flux RSS en tolérant les XML mal formés : si le nettoyage des « & » ne
+// suffit pas et que DOMParser a tronqué le document (moins d'<item> extraits que
+// présents dans le texte brut), on retombe sur l'extraction regex ci-dessus plutôt
+// que de perdre silencieusement tous les articles après la première erreur.
+function parseRssItems(xmlRaw){
+  const doc = new DOMParser().parseFromString(sanitizeXml(xmlRaw),'text/xml');
+  let items = [...doc.querySelectorAll('item')].map(it=>({
+    title: stripTags(it.querySelector('title')?.textContent).replace(/>$/,''),
+    desc:  stripTags(it.querySelector('description')?.textContent),
+    link:  it.querySelector('link')?.textContent?.trim()||'',
+  })).filter(i=>i.title);
+  const rawCount = (xmlRaw.match(/<item[\s>]/g)||[]).length;
+  if(rawCount && items.length<rawCount) items = extractItemsRegex(xmlRaw);
+  return items;
+}
+
 async function fetchRss(){
   const get = async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.text(); };
   // Casse-cache sur l'URL cible, en plus (défense en profondeur contre un éventuel
   // cache réseau qui servirait une version périmée).
   const bust = RSS+(RSS.includes('?')?'&':'?')+'_='+Date.now();
-  const xml = await fetchResilient(bust, get);
-  const doc = new DOMParser().parseFromString(sanitizeXml(xml),'text/xml');
-  const items = [...doc.querySelectorAll('item')].map(it=>({
-    title: stripTags(it.querySelector('title')?.textContent).replace(/>$/,''),
-    desc:  stripTags(it.querySelector('description')?.textContent),
-    link:  it.querySelector('link')?.textContent?.trim()||'',
-  })).filter(i=>i.title);
+  const xmlRaw = await fetchResilient(bust, get);
+  const items = parseRssItems(xmlRaw);
   if(!items.length) throw new Error('flux vide');
   return items;
 }
@@ -521,8 +553,7 @@ async function fetchGoogleNews(entities, force, querySuffix='action bourse'){
       const url=GNEWS+q;
       try{
         const xml = await fetchResilient(url, get);
-        const doc=new DOMParser().parseFromString(sanitizeXml(xml),'text/xml');
-        const titles=[...doc.querySelectorAll('item title')].slice(0,12).map(t=>t.textContent||'');
+        const titles=parseRssItems(xml).slice(0,12).map(i=>i.title);
         let score=0; for(const t of titles) score+=sentiment(t);
         GN[e.name]={score, n:titles.length, ts:Date.now()};
       }catch(err){}
@@ -779,16 +810,22 @@ function recordHistory(list=ENTITIES, byNameMap=byName, includeAll=false){
 function computeReliability(){
   const bullLabels=new Set(['ACHETER','Renforcer','Accumuler']);
   const bearLabels=new Set(['Alléger','VENDRE']);
-  const bull={n:0,ok:0}, bear={n:0,ok:0};
+  const bull={n:0,ok:0,sumPct:0}, bear={n:0,ok:0,sumPct:0};
   for(const e of HIST){
     if(e.price==null) continue;
     const cur=e.ticker?QUOTES[e.ticker]?.price:null;
     if(cur==null) continue;
-    const up=cur>e.price;
-    if(bullLabels.has(e.lab)){ bull.n++; if(up) bull.ok++; }
-    else if(bearLabels.has(e.lab)){ bear.n++; if(!up) bear.ok++; }
+    const pct=(cur/e.price-1)*100;
+    if(bullLabels.has(e.lab)){ bull.n++; if(pct>0) bull.ok++; bull.sumPct+=pct; }
+    // Pour une vente, la performance « dans le sens prévu » est la baisse : on garde
+    // le signe pour que positif = mouvement conforme à la reco (peu importe le sens).
+    else if(bearLabels.has(e.lab)){ bear.n++; if(pct<=0) bear.ok++; bear.sumPct+=-pct; }
   }
-  return {bull, bear, total:{n:bull.n+bear.n, ok:bull.ok+bear.ok}};
+  return {
+    bull:{...bull, avgPct: bull.n?bull.sumPct/bull.n:null},
+    bear:{...bear, avgPct: bear.n?bear.sumPct/bear.n:null},
+    total:{n:bull.n+bear.n, ok:bull.ok+bear.ok},
+  };
 }
 
 // Début de semaine (lundi) d'un timestamp, pour grouper l'historique semaine par semaine.
@@ -855,8 +892,9 @@ function renderHistory(){
   const el=$('#tab-hist');
   if(!HIST.length){ el.innerHTML='<div class="empty">Aucun historique pour l\'instant.<br>Chaque changement de reco s\'enregistre au fil des actualisations.</div>'; return; }
   const rel=computeReliability(), pct=b=>b.n?Math.round(100*b.ok/b.n):null;
+  const avg=b=>b.avgPct==null?'':` <i class="${b.avgPct>=0?'up':'down'}">(${b.avgPct>=0?'+':''}${b.avgPct.toFixed(1)}% en moyenne)</i>`;
   const relHtml = rel.total.n>=5
-    ? `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 <b style="color:#c5d1ec">Fiabilité mesurée</b> (performance réelle du cours depuis chaque changement de reco — pas une estimation) : <b style="color:#c5d1ec">${pct(rel.total)}%</b> (${rel.total.ok}/${rel.total.n})${rel.bull.n?` · Achat ${pct(rel.bull)}% (${rel.bull.ok}/${rel.bull.n})`:''}${rel.bear.n?` · Vente ${pct(rel.bear)}% (${rel.bear.ok}/${rel.bear.n})`:''}</div>`
+    ? `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 <b style="color:#c5d1ec">Fiabilité mesurée</b> (performance réelle du cours depuis chaque changement de reco — pas une estimation) : <b style="color:#c5d1ec">${pct(rel.total)}%</b> (${rel.total.ok}/${rel.total.n})${rel.bull.n?`<br>· Achat ${pct(rel.bull)}% (${rel.bull.ok}/${rel.bull.n})${avg(rel.bull)}`:''}${rel.bear.n?`<br>· Vente ${pct(rel.bear)}% (${rel.bear.ok}/${rel.bear.n})${avg(rel.bear)}`:''}</div>`
     : `<div class="card" style="font-size:12.5px;color:var(--mut);margin-bottom:12px">📊 Fiabilité mesurée : pas encore assez de données (minimum 5 changements de reco avec cours connu).</div>`;
   const weekHtml = renderWeeklyReliability();
   let h=`<div class="rc-head"><div class="rc-count">📜 ${HIST.length} changements</div>
