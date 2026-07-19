@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.11';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.12';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const RSS    = 'https://www.lerevenu.com/rss.xml';
 const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
@@ -154,13 +154,13 @@ const savePort = ()=>localStorage.setItem(K_PORT,JSON.stringify(PORT));
 /* ---------- Proxies CORS de repli ----------
  * La plupart des sources (lerevenu.com, Zonebourse, TradingView…) n'envoient pas
  * d'en-tête Access-Control-Allow-Origin : le fetch direct échoue depuis l'app.
- * On tente d'abord le direct, puis chaque proxy public de la liste en cascade —
- * si l'un d'eux tombe en panne (ex. api.allorigins.win en 522), les suivants prennent
- * le relais au lieu de bloquer toutes les sources d'un coup. */
+ * On tente d'abord le direct, puis le Worker Cloudflare perso (fiable, sous notre
+ * contrôle, cf. cf-proxy/), puis deux proxys publics en dernier recours si jamais
+ * le Worker est indisponible. */
 const CORS_PROXIES = [
+  u=>'https://reco-invest-proxy.laurentsar.workers.dev/?url='+encodeURIComponent(u),
   u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),
   u=>'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u),
-  u=>'https://corsproxy.io/?url='+encodeURIComponent(u),
 ];
 async function fetchResilient(url, get){
   try{ return await get(url); }catch(e){}
