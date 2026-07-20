@@ -42,6 +42,13 @@
     <section id="tab-mag" class="tab" hidden></section>
   </main>
 
+  <!-- Sauvegarde : les données (portefeuille, historique, alertes) vivent dans
+       le localStorage, que la désinstallation de l'APK efface. -->
+  <details id="backup-details" style="margin:16px auto;max-width:900px;padding:0 12px">
+    <summary style="cursor:pointer;font-weight:600;padding:8px 0">💾 Sauvegarde des données</summary>
+    <div id="backup-panel"></div>
+  </details>
+
   <footer id="disclaimer">
     ⚠️ Informations à but éducatif — <b>pas un conseil en investissement</b>.
     Actions générées automatiquement à partir des titres du magazine <b>Le Revenu</b>.
@@ -51,5 +58,8 @@
   <!-- MAJ auto gérée dans app.js (checkForUpdate) : bannière « ⬇ Installer » native
        via UpdatePlugin.downloadAndInstall, calquée sur flux-rss. -->
   <script src="app.js"></script>
+  <script>window.BACKUP_APP = 'reco-invest';</script>
+  <script src="autobackup.js"></script>
+  <script>AutoBackup.mount(document.getElementById('backup-panel'));</script>
 </body>
 </html>

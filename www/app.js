@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.17';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.18';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const RSS    = 'https://www.lerevenu.com/rss.xml';
 const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
