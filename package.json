@@ -1,6 +1,6 @@
 {
   "name": "reco-invest",
-  "version": "1.19",
+  "version": "1.20",
   "private": true,
   "description": "Recos d'investissement : sentiment Le Revenu + analyse technique + alertes de revente semi-auto",
   "scripts": {
