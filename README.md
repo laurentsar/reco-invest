@@ -13,10 +13,11 @@ du magazine **Le Revenu** (source du dashboard Flux RSS).
   - **Sentiment presse** (analyse lexicale des titres/chapôs du flux RSS Le Revenu),
   - **Analyse technique** sur cours réels (Yahoo Finance) : **SMA 20/50/200**, **RSI 14**,
     **MACD 12-26-9**, **momentum 3 mois**, **volatilité**.
-  - **Bougies japonaises** (OHLC Yahoo, dernière séance) : englobante haussière/baissière,
+  - **Bougies japonaises** (OHLC Yahoo, 3 dernières séances, 15 % du verdict) : englobante haussière/baissière,
     ligne de pénétration, couverture en nuage noir, marteau, marteau inversé, homme pendu,
     étoile filante, doji libellule / pierre tombale, marubozu (+ doji/toupie = hésitation,
-    neutres). Les figures de retournement ne comptent que dans leur contexte de tendance ;
+    neutres). Les figures de retournement ne comptent que dans leur contexte de tendance,
+    à pleine force si confirmées par la séance suivante, ignorées si leur stop est cassé ;
     la carte affiche la figure + un **stop suggéré** (plus bas/haut de la figure).
   - Pondération : 60 % technique + 40 % presse.
 - **🧭 Thématiques** — tendance par classe d'actifs (SCPI, ETF, assurance-vie, or, taux,
