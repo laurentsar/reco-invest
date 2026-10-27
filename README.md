@@ -13,11 +13,17 @@ du magazine **Le Revenu** (source du dashboard Flux RSS).
   - **Sentiment presse** (analyse lexicale des titres/chapôs du flux RSS Le Revenu),
   - **Analyse technique** sur cours réels (Yahoo Finance) : **SMA 20/50/200**, **RSI 14**,
     **MACD 12-26-9**, **momentum 3 mois**, **volatilité**.
+  - **Bougies japonaises** (OHLC Yahoo, dernière séance) : englobante haussière/baissière,
+    ligne de pénétration, couverture en nuage noir, marteau, marteau inversé, homme pendu,
+    étoile filante, doji libellule / pierre tombale, marubozu (+ doji/toupie = hésitation,
+    neutres). Les figures de retournement ne comptent que dans leur contexte de tendance ;
+    la carte affiche la figure + un **stop suggéré** (plus bas/haut de la figure).
   - Pondération : 60 % technique + 40 % presse.
 - **🧭 Thématiques** — tendance par classe d'actifs (SCPI, ETF, assurance-vie, or, taux,
   défense, IA…) selon le ton des articles.
 - **💼 Portefeuille + alertes de revente semi-auto** — saisie manuelle des positions ;
   règles configurables : **stop-loss %**, **take-profit %**, **objectif de cours**, **RSI de surachat**.
+  Une **figure de bougie baissière** sur une position détenue déclenche aussi une alerte « Alléger ».
   L'app surveille les cours et **alerte** quand une règle se déclenche (notification).
   L'**exécution reste manuelle** chez le courtier.
 - **📊 Allocation** — répartition cible indicative par profil (Prudent / Équilibré / Dynamique).

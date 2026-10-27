@@ -2,7 +2,8 @@
  * Sources :
  *   1) Sentiment : flux RSS du magazine Le Revenu (titres + chapôs).
  *   2) Quant : cours réels Yahoo Finance → indicateurs techniques répandus
- *      (SMA 20/50/200, RSI 14, MACD 12-26-9, momentum, volatilité).
+ *      (SMA 20/50/200, RSI 14, MACD 12-26-9, momentum, volatilité)
+ *      + figures de bougies japonaises (OHLC) : englobantes, marteau, étoile filante…
  * Reco = combinaison sentiment presse + signal technique.
  * Portefeuille saisi à la main + règles de revente semi-auto (alertes) :
  *   stop-loss, take-profit, RSI de surachat, objectif de cours.
@@ -12,7 +13,7 @@
  */
 'use strict';
 
-const APP_VERSION = '1.20';   // ← synchronisé par la CI depuis build.gradle (versionName)
+const APP_VERSION = '1.21';   // ← synchronisé par la CI depuis build.gradle (versionName)
 window.APP_VERSION = APP_VERSION;   // source unique pour update-check.js (bannière MAJ)
 const RSS    = 'https://www.lerevenu.com/rss.xml';
 const CAFEYN = 'https://www.cafeyn.co/fr/magazines/le-revenu-2';
@@ -288,7 +289,7 @@ function perf(a,k){ return a.length>k ? (a[a.length-1]/a[a.length-1-k]-1)*100 : 
 function volatility(a,n=21){ if(a.length<n+1) return null; const r=[]; for(let i=a.length-n;i<a.length;i++) r.push(Math.log(a[i]/a[i-1]));
   const m=r.reduce((x,y)=>x+y,0)/r.length; const v=r.reduce((s,x)=>s+(x-m)**2,0)/r.length; return Math.sqrt(v)*Math.sqrt(252)*100; }
 
-function computeQuote(closes){
+function computeQuote(closes, candles){
   const price = closes[closes.length-1];
   const m = macd(closes);
   return { price,
@@ -296,7 +297,7 @@ function computeQuote(closes){
     rsi:rsi(closes,14), macd:m.macd, sig:m.sig,
     m1:perf(closes,21), m3:perf(closes,63), m6:perf(closes,126),
     y1:perf(closes,Math.min(closes.length-1,251)),
-    vol:volatility(closes,21), ts:Date.now() };
+    vol:volatility(closes,21), candles:candles||null, ts:Date.now() };
 }
 
 async function fetchQuote(ticker){
@@ -304,9 +305,14 @@ async function fetchQuote(ticker){
   const get = async u=>{ const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.json(); };
   const j = await fetchResilient(url, get);
   const res = j?.chart?.result?.[0];
-  const closes = (res?.indicators?.quote?.[0]?.close||[]).filter(x=>x!=null);
+  const qt = res?.indicators?.quote?.[0]||{};
+  const closes = (qt.close||[]).filter(x=>x!=null);
   if(closes.length<30) throw new Error('série courte');
-  return computeQuote(closes);
+  // Bougies OHLC complètes (les 12 dernières suffisent aux figures japonaises)
+  const candles=[];
+  (qt.close||[]).forEach((c,i)=>{ const o=qt.open?.[i], h=qt.high?.[i], l=qt.low?.[i];
+    if(c!=null&&o!=null&&h!=null&&l!=null) candles.push({o,h,l,c}); });
+  return computeQuote(closes, candles.slice(-12));
 }
 
 /* Récupère les cours des tickers demandés (concurrence limitée + cache). */
@@ -577,6 +583,72 @@ function techScore(q){
   return {score:Math.max(-4,Math.min(4,s))};
 }
 
+/* ================= Bougies japonaises ================= */
+// Figures du « Guide d'analyse des bougies japonaises » détectées sur les dernières
+// séances. Une figure de retournement n'est retenue que dans le contexte de tendance
+// qui lui donne son sens (ex. marteau après une baisse, homme pendu après une hausse).
+// dir : +1 haussier, -1 baissier, 0 neutre (hésitation).
+const CDL_INFO = {
+  engulfBull:  ['Englobante haussière', 1, 'Fort changement de momentum à la hausse après une phase baissière.'],
+  engulfBear:  ['Englobante baissière', -1, 'Fort changement de momentum à la baisse après une phase haussière.'],
+  piercing:    ['Ligne de pénétration', 1, 'Modèle haussier : la bougie verte clôture au-delà de la moitié de la rouge précédente, après une baisse.'],
+  darkCloud:   ['Couverture en nuage noir', -1, 'Perte de momentum haussier : la bougie rouge clôture sous la moitié de la verte précédente.'],
+  hammer:      ['Marteau', 1, 'Possible inversion haussière après une baisse, surtout près d\'un support.'],
+  invHammer:   ['Marteau inversé', 1, 'Pression acheteuse après une forte baisse : signal possible d\'inversion haussière.'],
+  hangingMan:  ['Homme pendu', -1, 'Fin de tendance haussière : possible perte de contrôle des acheteurs.'],
+  shootingStar:['Étoile filante', -1, 'Sommet de tendance haussière : inversion baissière possible.'],
+  dragonfly:   ['Doji libellule', 1, 'Modèle d\'inversion haussière en fin de tendance baissière.'],
+  gravestone:  ['Doji pierre tombale', -1, 'Signal d\'inversion baissière en fin de tendance haussière.'],
+  marubozuBull:['Marubozu haussier', 1, 'Corps plein sans mèches : forte direction acheteuse.'],
+  marubozuBear:['Marubozu baissier', -1, 'Corps plein sans mèches : forte direction vendeuse.'],
+  doji:        ['Doji', 0, 'Ouverture ≈ clôture : hésitation du marché.'],
+  spinning:    ['Toupie', 0, 'Petit corps, mèches des deux côtés : hésitation du marché.'],
+};
+function detectCandles(cd){
+  if(!cd || cd.length<6) return [];
+  const n=cd.length, c=cd[n-1], p=cd[n-2];
+  const body=k=>Math.abs(k.c-k.o), range=k=>Math.max(k.h-k.l,1e-9);
+  const up=k=>k.c>k.o, down=k=>k.c<k.o;
+  const upper=k=>k.h-Math.max(k.o,k.c), lower=k=>Math.min(k.o,k.c)-k.l;
+  // Tendance des 5 séances précédant la figure (hors bougie(s) de la figure)
+  const ref=cd[n-7]||cd[0], prev=cd[n-2];
+  const ch=(prev.c/ref.c-1)*100;
+  const downTrend=ch<-2, upTrend=ch>2;
+  const avgBody=cd.slice(0,n-1).reduce((a,k)=>a+body(k),0)/(n-1)||1e-9;
+  const out=[], add=k=>out.push({k, name:CDL_INFO[k][0], dir:CDL_INFO[k][1], desc:CDL_INFO[k][2],
+    stop: CDL_INFO[k][1]>0 ? Math.min(c.l,(['engulfBull','piercing'].includes(k)?p.l:c.l))
+        : CDL_INFO[k][1]<0 ? Math.max(c.h,(['engulfBear','darkCloud'].includes(k)?p.h:c.h)) : null});
+
+  // Figures à deux bougies
+  if(downTrend && down(p) && up(c) && c.o<=p.c && c.c>=p.o && body(c)>body(p)) add('engulfBull');
+  else if(upTrend && up(p) && down(c) && c.o>=p.c && c.c<=p.o && body(c)>body(p)) add('engulfBear');
+  else if(downTrend && down(p) && body(p)>=avgBody && up(c) && c.o<p.c && c.c>(p.o+p.c)/2 && c.c<p.o) add('piercing');
+  else if(upTrend && up(p) && body(p)>=avgBody && down(c) && c.o>p.c && c.c<(p.o+p.c)/2 && c.c>p.o) add('darkCloud');
+  if(out.length) return out;
+
+  // Figures à une bougie
+  const b=body(c), r=range(c), lo=lower(c), hi=upper(c);
+  const isDoji=b<=r*0.1;
+  if(isDoji){
+    if(lo>=r*0.6 && hi<=r*0.1){ if(downTrend) add('dragonfly'); else add('doji'); }
+    else if(hi>=r*0.6 && lo<=r*0.1){ if(upTrend) add('gravestone'); else add('doji'); }
+    else add('doji');
+    return out;
+  }
+  if(lo>=2*b && hi<=b*0.5){ if(downTrend) add('hammer'); else if(upTrend) add('hangingMan'); }
+  else if(hi>=2*b && lo<=b*0.5){ if(downTrend) add('invHammer'); else if(upTrend) add('shootingStar'); }
+  else if(b>=r*0.9 && b>=avgBody*1.3) add(up(c)?'marubozuBull':'marubozuBear');
+  else if(b<=r*0.3 && hi>=b && lo>=b) add('spinning');
+  return out;
+}
+/* Signal bougies ∈ [-1..+1] : figure directionnelle de la dernière séance. */
+function candleView(q){
+  if(!q?.candles) return null;
+  const f=detectCandles(q.candles);
+  if(!f.length) return {figs:[], dir:0};
+  return {figs:f, dir:clamp(f.reduce((a,x)=>a+x.dir,0),-1,1)};
+}
+
 /* ================= Sentiment ================= */
 // Inverse le signe d'un mot du lexique si une négation ("ne...pas", "sans", "aucun"…)
 // apparaît juste avant lui dans la même phrase (coupe à la ponctuation forte précédente).
@@ -637,6 +709,9 @@ function computeVerdict(e){
   // Google News (presse monde)
   const gv=gnView(e.name);
   sig.push({k:'gn', w:0.08, dir:gv?clamp(gv.score/3,-1,1):0, has:!!gv});
+  // Bougies japonaises : retenu seulement si une figure directionnelle apparaît
+  const cdl=candleView(e.q);
+  sig.push({k:'cdl', w:0.08, dir:cdl?cdl.dir:0, has:!!(cdl&&cdl.dir)});
 
   const avail=sig.filter(s=>s.has);
   const wsum=avail.reduce((a,s)=>a+s.w,0)||1;
@@ -652,7 +727,7 @@ function computeVerdict(e){
   else if(composite>-0.05){lab='Conserver';cls='b-gray';}
   else if(composite>-0.4){lab='Alléger';cls='b-amber';}
   else{lab='VENDRE';cls='b-red';}
-  return {lab,cls,composite,nSig:avail.length,bull,bear,cv,gv,zv,tv,sa};
+  return {lab,cls,composite,nSig:avail.length,bull,bear,cv,gv,zv,tv,sa,cdl};
 }
 
 /* Lien Boursorama : page cours (où l'utilisateur connecté passe l'ordre). */
@@ -667,7 +742,7 @@ const LEGEND_HTML = `<div class="legend-body">
      <span class="tag b-green">ACHETER</span> <span class="tag b-green">Renforcer</span>
      <span class="tag b-amber">Accumuler</span> <span class="tag b-gray">Conserver</span>
      <span class="tag b-amber">Alléger</span> <span class="tag b-red">VENDRE</span>.</p>
-  <p><b>7 sources croisées</b> (🟢 positif · ⚪ neutre · 🔴 négatif), pondérées :</p>
+  <p><b>8 sources croisées</b> (🟢 positif · ⚪ neutre · 🔴 négatif), pondérées :</p>
   <ul>
     <li>📰 <b>Le Revenu</b> 22 % — point de départ (valeurs citées + ton des articles)</li>
     <li>📈 <b>Technique</b> 20 % — calculé en interne : SMA 20/50/200, RSI 14, MACD, momentum</li>
@@ -676,9 +751,18 @@ const LEGEND_HTML = `<div class="legend-body">
     <li>🌐 <b>Consensus mondial (Yahoo)</b> 16 % — analystes (retenu si ≥ ${MIN_ANALYSTS})</li>
     <li>📊 <b>StockAnalysis.com</b> 14 % — consensus analystes + objectif, couverture internationale</li>
     <li>🔎 <b>Google News</b> 8 % — sentiment presse monde</li>
+    <li>🎴 <b>Bougies japonaises</b> 8 % — figure détectée sur la dernière séance (compte seulement si elle est haussière ou baissière)</li>
   </ul>
-  <p><span class="conc ok">✅ concordants</span> = les sources s'accordent au même instant (≥3/7 disponibles alignées).
-     <span class="conc mid">⚠️ x/7 sources</span> = moins de 3 sources disponibles pour cette valeur, verdict moins robuste.
+  <div class="lg-h">Figures de bougies japonaises</div>
+  <p>Une figure de retournement n'est retenue que dans le bon contexte (5 séances précédentes en baisse ou en hausse de plus de 2 %).</p>
+  <ul>
+    <li>🟢 <b>Haussières</b> : Englobante haussière, Ligne de pénétration, Marteau, Marteau inversé, Doji libellule, Marubozu haussier</li>
+    <li>🔴 <b>Baissières</b> : Englobante baissière, Couverture en nuage noir, Homme pendu, Étoile filante, Doji pierre tombale, Marubozu baissier</li>
+    <li>⚪ <b>Neutres</b> (hésitation, sans effet sur le score) : Doji, Toupie</li>
+  </ul>
+  <p>🛑 <b>Stop suggéré</b> : sous le plus bas de la figure haussière (ou au-dessus du plus haut d'une figure baissière) — l'invalidation classique de la figure.</p>
+  <p><span class="conc ok">✅ concordants</span> = les sources s'accordent au même instant (≥3/8 disponibles alignées).
+     <span class="conc mid">⚠️ x/8 sources</span> = moins de 3 sources disponibles pour cette valeur, verdict moins robuste.
      🎯 <b>Objectif</b> = cours cible + <b>potentiel</b> vs cours actuel.
      💰 <b>Boursorama</b> = ouvre la fiche pour passer l'ordre (exécution manuelle).</p>
   <p style="color:#9fb0d4">⚠️ La concordance mesure un accord entre sources à l'instant T, pas une performance réelle.
@@ -688,7 +772,7 @@ const LEGEND_HTML = `<div class="legend-body">
 </div>`;
 
 /* ================= Rendu : Action / ETF ================= */
-// Moteur commun aux deux onglets valeurs (mêmes 7 sources, même verdict).
+// Moteur commun aux deux onglets valeurs (mêmes 8 sources, même verdict).
 // includeAll=true (ETF) : affiche toute la liste même sans citation presse
 // (les ETF sont rarement cités individuellement par Le Revenu).
 function renderAssetTab(tabId, list, byNameMap, includeAll){
@@ -702,7 +786,7 @@ function renderAssetTab(tabId, list, byNameMap, includeAll){
 
   const dot=d=>d==null?'⚪':d>0.15?'🟢':d<-0.15?'🔴':'⚪';
   let h=`<div class="rc-head">
-    <div class="rc-count">🎯 ${scored.length} valeurs · 7 sources</div>
+    <div class="rc-count">🎯 ${scored.length} valeurs · 8 sources</div>
     <button id="legend-btn-${tabId}" class="legend-btn" aria-label="Légende">ⓘ Légende</button>
   </div>
   <div id="legend-${tabId}" class="legend" hidden>${LEGEND_HTML}</div>`;
@@ -711,8 +795,9 @@ function renderAssetTab(tabId, list, byNameMap, includeAll){
     const v=e.v, best=e.arts.length?e.arts.slice().sort((a,b)=>Math.abs(b.s)-Math.abs(a.s))[0]:null, q=e.q;
     const lrDir=clamp(e.news/2,-1,1), techDir=e.tech==null?null:e.tech/4,
           tvDir=v.tv?v.tv.dir:null, zbDir=v.zv?v.zv.dir:null, consDir=v.cv?(3-v.cv.mean)/1.5:null,
-          saDir=v.sa?v.sa.dir:null, gDir=v.gv?v.gv.score/3:null;
-    // pastilles 7 sources : tap → bulle légende (data-tip) + survol (title)
+          saDir=v.sa?v.sa.dir:null, gDir=v.gv?v.gv.score/3:null,
+          cdlDir=v.cdl?(v.cdl.dir||0):null, fig=v.cdl?.figs?.[0];
+    // pastilles 8 sources : tap → bulle légende (data-tip) + survol (title)
     const dotSpan=(icon,dir,tip)=>{
       const d=dir==null?'⚫':dot(dir);
       return `<span class="dotitem" data-tip="${esc(tip)}" title="${esc(tip)}">${icon}${d}</span>`;
@@ -725,6 +810,7 @@ function renderAssetTab(tabId, list, byNameMap, includeAll){
       ${dotSpan('🌐',consDir,`Consensus analystes mondial (Yahoo) — 16 % du score. ${v.cv?(v.cv.dir>0?'🟢':v.cv.dir<0?'🔴':'⚪')+' '+v.cv.label+' · '+v.cv.n+' analystes'+(v.cv.target?' · objectif moyen '+fmt(v.cv.target)+' €':''):'⚫ Indispo (< '+MIN_ANALYSTS+' analystes ou hors ligne / PWA)'}.`)}
       ${dotSpan('📊',saDir,`Consensus StockAnalysis.com — 14 % du score. ${v.sa?(v.sa.dir>0?'🟢':v.sa.dir<0?'🔴':'⚪')+' '+v.sa.label+(v.sa.target?' · objectif '+fmt(v.sa.target)+' €':''):'⚫ Indispo (souvent le cas pour les ETF)'}.`)}
       ${dotSpan('🔎',gDir,`Google News (presse monde) — 8 % du score. ${gDir==null?'⚫ Indispo':gDir>0.15?'🟢 Positif':gDir<-0.15?'🔴 Négatif':'⚪ Neutre'}. Sentiment agrégé de la presse mondiale.`)}
+      ${dotSpan('🎴',cdlDir,`Bougies japonaises — 8 % du score. ${v.cdl==null?'⚫ Bougies indisponibles':fig?(fig.dir>0?'🟢 ':fig.dir<0?'🔴 ':'⚪ ')+fig.name+' : '+fig.desc:'⚪ Aucune figure sur la dernière séance'}`)}
     </div>`;
     // concordance
     const conc = v.nSig>=3 ? (v.bull>=v.nSig ? `<span class="conc ok" title="Toutes les sources s'alignent">✅ ${v.bull}/${v.nSig}</span>`
@@ -732,7 +818,7 @@ function renderAssetTab(tabId, list, byNameMap, includeAll){
       : v.bull>v.bear ? `<span class="conc mid">↗︎ ${v.bull}/${v.nSig}</span>`
       : v.bear>v.bull ? `<span class="conc mid">↘︎ ${v.bear}/${v.nSig}</span>`
       : `<span class="conc mid">↔︎ partagé</span>`)
-      : `<span class="conc mid" title="Peu de sources disponibles pour cette valeur — verdict moins robuste">⚠️ ${v.nSig}/7 sources</span>`;
+      : `<span class="conc mid" title="Peu de sources disponibles pour cette valeur — verdict moins robuste">⚠️ ${v.nSig}/8 sources</span>`;
     // ligne cours
     const priceStr = q?.price!=null ? `<b>${fmt(q.price)} €</b>` : '<span class="muted">cours n/d</span>';
     // objectifs (LR + consensus) en lignes clé-valeur
@@ -756,6 +842,10 @@ function renderAssetTab(tabId, list, byNameMap, includeAll){
         <span title="MACD 12-26-9">MACD ${q.macd!=null?(q.macd>q.sig?'▲':'▼'):'—'}</span>
         <span title="Performance 3 mois">3M ${q.m3==null?'—':(q.m3>0?'+':'')+q.m3.toFixed(0)+'%'}</span>
       </div>`;
+    }
+    if(fig){
+      const cl=fig.dir>0?'up':fig.dir<0?'down':'';
+      kv+=`<div class="kv" title="${esc(fig.desc)}"><span>🎴 Bougie</span><b><i class="${cl}">${esc(fig.name)}</i>${fig.stop!=null?` · stop ${fmt(fig.stop)} €`:''}</b></div>`;
     }
     const bUrl=boursoUrl(e.ticker,e.name);
     const buyLab = /green|amber/.test(v.cls)&&v.composite>=0.05 ? '💰 Acheter' : '💰 Boursorama';
@@ -950,6 +1040,8 @@ function evalRules(p,q){
   if(p.tp && pl>=Math.abs(p.tp)) r.push(['SELL',`Take-profit atteint (+${pl.toFixed(1)}% ≥ +${p.tp}%)`]);
   if(p.target && price>=p.target) r.push(['SELL',`Objectif de cours atteint (${fmt(price)} ≥ ${fmt(p.target)})`]);
   if(p.rsi && q.rsi!=null && q.rsi>=p.rsi) r.push(['TRIM',`RSI en surachat (${Math.round(q.rsi)} ≥ ${p.rsi})`]);
+  const bear=detectCandles(q.candles).find(f=>f.dir<0);
+  if(bear) r.push(['TRIM',`Bougie baissière : ${bear.name} (stop ${fmt(bear.stop)})`]);
   const action = r.some(x=>x[0]==='SELL')?'SELL':r.length?'TRIM':'HOLD';
   return {action, reasons:r.map(x=>x[1])};
 }
@@ -1311,7 +1403,7 @@ async function load(force){
     recordHistory();                          // valeurs
     recordHistory(ETFS, byNameETF, true);     // ETF
     scheduleRenderAll();
-    st.textContent=ITEMS.length+' articles · 7 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+    st.textContent=ITEMS.length+' articles · 8 sources · '+new Date().toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   }catch(e){
     if(!ITEMS.length) st.textContent='⚠️ Hors-ligne et aucun cache.';
     else st.textContent='⚠️ Actualisation partielle — cache affiché.';
